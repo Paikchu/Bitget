@@ -44,6 +44,7 @@ from pydantic import BaseModel
 
 from bitget_bot import db as _db
 from bitget_bot.runner import start_loop
+from bitget_bot.strategy_router import router as strategy_router
 
 logging.basicConfig(
     level=logging.INFO,
@@ -213,6 +214,7 @@ async def lifespan(app: FastAPI):
 # ─────────────────────────────────────────────────────────────
 
 app = FastAPI(title="Bitget Bot Dashboard API", version="1.0.0", lifespan=lifespan)
+app.include_router(strategy_router)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
