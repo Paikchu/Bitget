@@ -244,10 +244,11 @@ def _run_backtest(ohlcv: list, strategy_ns: dict, params: dict) -> dict:
     date_from = str(df["timestamp"].iloc[0])
     date_to = str(df["timestamp"].iloc[-1])
 
-    # Downsample equity curve to max 300 points
+    # Downsample equity curve to max 300 points (strictly ≤300)
     if len(equity_curve) > 300:
-        step = len(equity_curve) / 300
-        equity_curve = [equity_curve[int(i * step)] for i in range(300)] + [equity_curve[-1]]
+        step = len(equity_curve) / 299
+        indices = sorted(set([int(i * step) for i in range(299)] + [len(equity_curve) - 1]))
+        equity_curve = [equity_curve[i] for i in indices[:300]]
 
     summary = {
         "total_trades": total_trades,
