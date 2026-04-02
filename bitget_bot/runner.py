@@ -473,5 +473,47 @@ def main() -> None:
         time.sleep(max(5, args.interval))
 
 
+def start_loop(
+    symbol: str,
+    timeframe: str,
+    squeeze: float,
+    margin_pct: float,
+    lev: int,
+    dry_run: bool,
+    db_state: Optional[dict] = None,
+    poll_interval: int = 60,
+) -> None:
+    """
+    Blocking trading loop for programmatic use (e.g. a background thread from api.py).
+    All parameters are explicit — no argparse, no env-var side-effects.
+    This function never returns; it is designed to run inside a daemon thread.
+    """
+    ex = make_exchange()
+    ex.load_markets()
+
+    if not dry_run:
+        try:
+            ex.set_leverage(lev, symbol)
+        except Exception as e:
+            log.warning("set_leverage: %s", e)
+
+    log.info("start_loop: %s %s lev=%dx dry_run=%s", symbol, timeframe, lev, dry_run)
+    last_bar_ts: Optional[int] = None
+
+    while True:
+        try:
+            ohlcv = fetch_closed_ohlcv(ex, symbol, timeframe, limit=300)
+            bar_ts = ohlcv[-1][0] if ohlcv else None
+            new_bar = bar_ts is not None and bar_ts != last_bar_ts
+            if new_bar:
+                last_bar_ts = bar_ts
+                run_cycle(ex, symbol, timeframe, squeeze, margin_pct, lev, dry_run, db_state=db_state)
+                if db_state is not None and bar_ts is not None:
+                    _db_snapshot_equity(bar_ts, db_state)
+        except Exception as e:
+            log.exception("cycle error: %s", e)
+        time.sleep(max(5, poll_interval))
+
+
 if __name__ == "__main__":
     main()

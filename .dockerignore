@@ -1,0 +1,12 @@
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+data/
+.env
+frontend/node_modules/
+frontend/dist/
+*.db
+.git/
+.gitignore
+docs/

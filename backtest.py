@@ -83,8 +83,9 @@ class Trade:
     exit_time: Optional[pd.Timestamp] = None
     exit_price: Optional[float] = None
     pnl_pct: Optional[float] = None    # % move in price (×leverage for return on margin)
-    pnl_usdt: Optional[float] = None   # realised P&L in USDT (equity delta)
-    notional: Optional[float] = None   # notional at entry
+    pnl_usdt: Optional[float] = None   # realised P&L in USDT after fees (equity delta)
+    notional: Optional[float] = None   # notional at entry (= margin × leverage)
+    fee_usdt: Optional[float] = None   # total fees paid (entry + exit)
 
 
 # ──────────────────────────────────────────────
@@ -112,8 +113,13 @@ def _close_trade(
     exit_bar: int,
     exit_time: pd.Timestamp,
     exit_price: float,
+    fee_rate: float = 0.0,
 ) -> float:
-    """Fill exit fields on an open Trade; return the USDT P&L."""
+    """Fill exit fields on an open Trade; return the net USDT P&L after fees.
+
+    fee_rate is applied twice (entry + exit), each as a fraction of notional.
+    e.g. fee_rate=0.0005 means 0.05% per order side = 0.10% round-trip.
+    """
     trade.exit_bar = exit_bar
     trade.exit_time = exit_time
     trade.exit_price = exit_price
@@ -122,9 +128,11 @@ def _close_trade(
     else:
         ret = (trade.entry_price - exit_price) / trade.entry_price
     trade.pnl_pct = ret * 100.0
-    pnl = trade.notional * ret
-    trade.pnl_usdt = pnl
-    return pnl
+    gross_pnl = trade.notional * ret
+    fees = trade.notional * fee_rate * 2  # entry + exit fees
+    trade.fee_usdt = round(fees, 6)
+    trade.pnl_usdt = gross_pnl - fees
+    return trade.pnl_usdt
 
 
 # ──────────────────────────────────────────────
@@ -137,6 +145,7 @@ def run_backtest(
     initial_equity: float = 10_000.0,
     leverage: int = 5,
     margin_pct: float = 100.0,
+    fee_rate: float = 0.0,
 ) -> tuple[List[Trade], pd.Series]:
     """
     Bar-by-bar backtest.
@@ -184,7 +193,7 @@ def run_backtest(
 
         # ── Close existing leg if position is changing ──────────────────
         if position != 0 and new_pos != position:
-            pnl = _close_trade(trades[-1], fill_bar, fill_time, fill_price)
+            pnl = _close_trade(trades[-1], fill_bar, fill_time, fill_price, fee_rate)
             equity += pnl
             position = 0
 
@@ -209,7 +218,7 @@ def run_backtest(
         last_bar  = n - 1
         last_time = times.iloc[last_bar]
         last_price = float(c[last_bar])
-        pnl = _close_trade(trades[-1], last_bar, last_time, last_price)
+        pnl = _close_trade(trades[-1], last_bar, last_time, last_price, fee_rate)
         equity += pnl
 
     # Forward-fill equity_arr for bars with no trade activity
@@ -320,6 +329,7 @@ def main() -> None:
     p.add_argument("--equity",     type=float, default=10_000, help="Starting equity (USDT)")
     p.add_argument("--leverage",   type=int,   default=5,     help="Futures leverage")
     p.add_argument("--margin-pct", type=float, default=100.0, help="Equity%% used as margin per trade")
+    p.add_argument("--fee-rate",   type=float, default=0.0005, help="Taker fee per order side (0.0005 = 0.05%%)")
     p.add_argument("--out-csv",    default="",                help="Save all trades to this CSV path")
     args = p.parse_args()
 
@@ -344,6 +354,7 @@ def main() -> None:
         initial_equity=args.equity,
         leverage=args.leverage,
         margin_pct=args.margin_pct,
+        fee_rate=args.fee_rate,
     )
 
     print_report(trades, equity_series, args.equity)

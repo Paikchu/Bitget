@@ -209,6 +209,35 @@ def get_events(limit: int = 100) -> list[dict]:
     return [dict(r) for r in rows]
 
 
+def get_events_since(last_id: int) -> list[dict]:
+    """Return events with id > last_id, oldest first. Used by the WS broadcaster."""
+    conn = _get_conn()
+    rows = conn.execute(
+        "SELECT * FROM bot_events WHERE id > ? ORDER BY id ASC LIMIT 100",
+        (last_id,),
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def get_latest_equity() -> Optional[dict]:
+    """Return the most recent equity snapshot, or None."""
+    conn = _get_conn()
+    row = conn.execute(
+        "SELECT * FROM equity_snapshots ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def get_trade_by_id(trade_id: int) -> Optional[dict]:
+    """Fetch a single trade row by primary key."""
+    conn = _get_conn()
+    row = conn.execute("SELECT * FROM trades WHERE id = ?", (trade_id,)).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
 def get_summary_stats() -> dict:
     """Return aggregate statistics over all closed trades."""
     conn = _get_conn()
