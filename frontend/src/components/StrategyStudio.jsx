@@ -2,6 +2,8 @@ import { useState, useRef, useCallback, useEffect } from 'react'
 import MarkdownEditor, { DEFAULT_MARKDOWN } from './studio/MarkdownEditor'
 import CodeEditor from './studio/CodeEditor'
 import BacktestResults from './studio/BacktestResults'
+import { useCodeValidation } from '../hooks/useCodeValidation'
+import CodeErrorPanel from './studio/CodeErrorPanel'
 
 const API = '/api/strategy'
 const DEFAULT_PARAMS = {
@@ -23,7 +25,11 @@ export default function StrategyStudio() {
   const [backtestError, setBtError]     = useState(null)
   const [params, setParams]             = useState(DEFAULT_PARAMS)
   const [genError, setGenError]         = useState(null)
+  const [runtimeError, setRuntimeError] = useState(null)
+  const [fixing, setFixing]             = useState(false)
   const pollRef = useRef(null)
+
+  const { errors: codeErrors, monacoMarkers } = useCodeValidation(code)
 
   // Load built-in strategy code on mount
   useEffect(() => {
@@ -67,6 +73,28 @@ export default function StrategyStudio() {
       console.error('Failed to load builtin strategy', e)
     }
   }, [])
+
+  const handleAiFix = useCallback(async (errorMessage) => {
+    if (!code) return
+    setFixing(true)
+    try {
+      const res = await fetch('/api/strategy/fix', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          code,
+          error_message: errorMessage,
+          error_type: runtimeError ? 'runtime' : 'static',
+        }),
+      })
+      const data = await res.json()
+      if (data.code) { setCode(data.code); setRuntimeError(null) }
+    } catch (e) {
+      console.error('AI fix failed:', e)
+    } finally {
+      setFixing(false)
+    }
+  }, [code, runtimeError])
 
   const handleBacktest = useCallback(async () => {
     if (!code?.trim()) { setBtError('请先生成或编写策略代码'); return }
@@ -126,7 +154,8 @@ export default function StrategyStudio() {
         </div>
         {/* Right: Code */}
         <div className="w-1/2 flex flex-col">
-          <div className="flex-1 min-h-0"><CodeEditor value={code} onChange={setCode} generating={generating} /></div>
+          <div className="flex-1 min-h-0"><CodeEditor value={code} onChange={setCode} generating={generating} monacoMarkers={monacoMarkers} /></div>
+          <CodeErrorPanel errors={codeErrors} runtimeError={runtimeError} onAiFix={handleAiFix} fixing={fixing} />
           {code && (
             <div className="flex items-center gap-2 px-3 py-2 bg-gray-900 border-t border-gray-800">
               <button onClick={() => navigator.clipboard.writeText(code)}

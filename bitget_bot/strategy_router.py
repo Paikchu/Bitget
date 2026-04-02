@@ -232,3 +232,73 @@ def get_builtin(strategy_id: str):
     if not strat:
         raise HTTPException(status_code=404, detail=f"Built-in strategy '{strategy_id}' not found")
     return strat
+
+
+# ── Debug endpoints ────────────────────────────────────────────────────────────
+
+from bitget_bot.sandbox.code_validator import validate_code_full as _validate_full  # noqa: E402
+
+
+class ValidateRequest(BaseModel):
+    code: str
+
+
+class FixRequest(BaseModel):
+    code: str
+    error_message: str
+    error_type: str = "unknown"
+
+
+_FIX_SYSTEM_PROMPT = """你是一个 Python 交易策略调试专家。
+用户会给你一段有错误的策略代码和对应的错误信息，你需要修复代码中的错误并返回完整的修复后代码。
+
+策略代码必须满足：
+1. 必须定义 add_indicators(df) 和 get_signal(df, i, params)
+2. get_signal 返回含 long_entry, short_entry, close_long, close_short 四个布尔值的字典
+3. 只能导入：numpy, pandas, math, dataclasses, typing, collections, functools, itertools, datetime
+4. 禁止：os, sys, subprocess, exec, eval, open
+
+修复原则：只修复错误，保留策略逻辑不变。只输出 Python 代码，不含 Markdown 代码块标记。"""
+
+
+@router.post("/validate")
+def validate_strategy(req: ValidateRequest):
+    """Real-time code validation endpoint. Returns structured errors with line numbers."""
+    return _validate_full(req.code)
+
+
+@router.post("/fix")
+async def fix_strategy(req: FixRequest):
+    """AI-assisted code fix. Sends code + error to DeepSeek, returns fixed code."""
+    api_key = os.environ.get("DEEPSEEK_API_KEY", "sk-895c815115174383a7e696add1fbc2fa")
+    if not api_key:
+        raise HTTPException(status_code=500, detail="未配置 DEEPSEEK_API_KEY")
+
+    from openai import OpenAI
+    client = OpenAI(api_key=api_key, base_url="https://api.deepseek.com/v1")
+    user_msg = (
+        f"以下策略代码存在错误，请修复：\n\n"
+        f"错误信息：\n{req.error_message}\n\n"
+        f"错误类型：{req.error_type}\n\n"
+        f"代码：\n{req.code}"
+    )
+
+    try:
+        response = client.chat.completions.create(
+            model="deepseek-chat",
+            messages=[
+                {"role": "system", "content": _FIX_SYSTEM_PROMPT},
+                {"role": "user", "content": user_msg},
+            ],
+            temperature=0.05,
+            max_tokens=4096,
+        )
+        fixed = response.choices[0].message.content.strip()
+        if fixed.startswith("```"):
+            lines = fixed.split("\n")
+            fixed = "\n".join(lines[1:-1] if lines[-1].strip() == "```" else lines[1:])
+        validation = _validate_full(fixed)
+        return {"code": fixed, "validation": validation, "fixed": validation["valid"]}
+    except Exception as e:
+        log.exception("AI fix failed")
+        raise HTTPException(status_code=502, detail=f"AI 修复失败: {str(e)}")
