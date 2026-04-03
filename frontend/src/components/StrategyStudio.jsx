@@ -14,6 +14,21 @@ const DEFAULT_PARAMS = {
   leverage: 5,
   margin_pct: 100,
   fee_rate: 0.0005,
+  squeeze_threshold: 0.35,
+}
+
+/** Parse sandbox / Python errors for the error panel (line hint when traceback present). */
+function parseRuntimeError(err) {
+  if (!err || typeof err !== 'string') return null
+  const matches = [...err.matchAll(/File "<strategy>",\s*line\s*(\d+)/g)]
+  const last = matches.length ? parseInt(matches[matches.length - 1][1], 10) : null
+  const lines = err.trim().split('\n')
+  const tail = lines[lines.length - 1] || err
+  return {
+    line: last,
+    message: tail.length > 280 ? `${tail.slice(0, 280)}…` : tail,
+    full_traceback: err.length > 4000 ? `${err.slice(0, 4000)}…` : err,
+  }
 }
 
 export default function StrategyStudio() {
@@ -31,11 +46,14 @@ export default function StrategyStudio() {
 
   const { errors: codeErrors, monacoMarkers } = useCodeValidation(code)
 
-  // Load built-in strategy code on mount
+  // Default: load built-in MA-squeeze strategy (markdown + code) into both editors
   useEffect(() => {
     fetch(`${API}/builtin/ma_squeeze`)
-      .then(r => r.ok ? r.json() : null)
-      .then(data => { if (data?.code) setCode(data.code) })
+      .then(r => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (data?.markdown) setMarkdown(data.markdown)
+        if (data?.code) setCode(data.code)
+      })
       .catch(() => {})
   }, [])
 
@@ -99,7 +117,10 @@ export default function StrategyStudio() {
   const handleBacktest = useCallback(async () => {
     if (!code?.trim()) { setBtError('请先生成或编写策略代码'); return }
     clearTimeout(pollRef.current)
-    setBtLoading(true); setBtResult(null); setBtError(null)
+    setBtLoading(true)
+    setBtResult(null)
+    setBtError(null)
+    setRuntimeError(null)
     try {
       const res = await fetch(`${API}/backtest`, {
         method: 'POST',
@@ -114,10 +135,15 @@ export default function StrategyStudio() {
           if (job.status === 'running') {
             pollRef.current = setTimeout(poll, 2000)
           } else if (job.status === 'done') {
-            setBtResult(job); setBtLoading(false)
+            setBtResult(job)
+            setBtLoading(false)
+            setRuntimeError(null)
             document.getElementById('bt-results')?.scrollIntoView({ behavior: 'smooth' })
           } else {
-            setBtError(job.error || '回测失败'); setBtLoading(false)
+            const msg = job.error || '回测失败'
+            setBtError(msg)
+            setRuntimeError(parseRuntimeError(msg))
+            setBtLoading(false)
           }
         } catch { setBtError('轮询失败'); setBtLoading(false) }
       }
@@ -191,6 +217,11 @@ export default function StrategyStudio() {
           <input type="number" min="100" value={params.initial_equity} onChange={e => setParams(p => ({...p, initial_equity: +e.target.value}))}
             className="bg-gray-800 border border-gray-700 rounded px-2 py-1 w-20 text-gray-200 text-xs" />
           <span className="text-gray-600">USDT</span>
+        </label>
+        <label className="flex items-center gap-1.5 text-xs text-gray-400">
+          Squeeze%
+          <input type="number" step="0.01" min="0.05" max="5" value={params.squeeze_threshold} onChange={e => setParams(p => ({...p, squeeze_threshold: +e.target.value}))}
+            className="bg-gray-800 border border-gray-700 rounded px-2 py-1 w-16 text-gray-200 text-xs" />
         </label>
         <button onClick={handleBacktest} disabled={backtestLoading || !code}
           className="ml-auto flex items-center gap-1.5 px-4 py-1.5 bg-green-700 hover:bg-green-600 disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm rounded-md font-medium transition-colors">

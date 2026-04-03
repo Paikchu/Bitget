@@ -11,6 +11,7 @@ ALLOWED_IMPORTS: frozenset[str] = frozenset({
     "statistics", "dataclasses", "typing", "collections",
     "functools", "itertools", "operator", "datetime",
     "decimal", "fractions", "numbers", "abc", "copy",
+    "__future__",  # e.g. from __future__ import annotations
 })
 
 FORBIDDEN_BUILTINS: frozenset[str] = frozenset({

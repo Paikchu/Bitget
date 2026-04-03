@@ -28,6 +28,7 @@ _ALLOWED_IMPORT_TOPS = frozenset({
     "dataclasses", "typing", "collections", "functools",
     "itertools", "operator", "datetime", "decimal",
     "fractions", "numbers", "abc", "copy",
+    "__future__",
 })
 
 

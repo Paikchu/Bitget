@@ -118,6 +118,7 @@ class BacktestRequest(BaseModel):
     leverage: int = 5
     margin_pct: float = 100.0
     fee_rate: float = 0.0005
+    squeeze_threshold: float = 0.35
 
 
 # ─────────────────────────────────────────────────────────────
@@ -126,9 +127,12 @@ class BacktestRequest(BaseModel):
 
 @router.post("/generate")
 def generate_strategy(req: GenerateRequest):
-    api_key = os.environ.get("DEEPSEEK_API_KEY", "sk-895c815115174383a7e696add1fbc2fa")
+    api_key = os.environ.get("DEEPSEEK_API_KEY", "").strip()
     if not api_key:
-        raise HTTPException(status_code=500, detail="DEEPSEEK_API_KEY not configured")
+        raise HTTPException(
+            status_code=500,
+            detail="DEEPSEEK_API_KEY not configured — set it in .env (see .env.example)",
+        )
 
     try:
         from openai import OpenAI
@@ -181,6 +185,7 @@ def start_backtest(req: BacktestRequest):
                 "leverage": req.leverage,
                 "margin_pct": req.margin_pct,
                 "fee_rate": req.fee_rate,
+                "squeeze_threshold": req.squeeze_threshold,
             }
             result = run_strategy_in_sandbox(req.strategy_code, ohlcv, params)
             _jobs[job_id] = {
@@ -268,9 +273,9 @@ def validate_strategy(req: ValidateRequest):
 
 
 @router.post("/fix")
-async def fix_strategy(req: FixRequest):
+def fix_strategy(req: FixRequest):
     """AI-assisted code fix. Sends code + error to DeepSeek, returns fixed code."""
-    api_key = os.environ.get("DEEPSEEK_API_KEY", "sk-895c815115174383a7e696add1fbc2fa")
+    api_key = os.environ.get("DEEPSEEK_API_KEY", "").strip()
     if not api_key:
         raise HTTPException(status_code=500, detail="未配置 DEEPSEEK_API_KEY")
 

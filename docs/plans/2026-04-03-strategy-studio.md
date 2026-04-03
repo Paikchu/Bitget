@@ -3353,3 +3353,54 @@ Bitget/
     ├── test_docker_executor.py
     └── test_strategy_migration.py   # ← Task 13 新增（等价性验证）
 ```
+
+---
+
+## 实施完成与验收报告（2026-04-03）
+
+### Task 完成清单
+
+| Task | 状态 | 说明 |
+|------|------|------|
+| 1 沙箱镜像 | 完成 | `sandbox/Dockerfile.sandbox` + `sandbox/sandbox_runner.py`；`docker build -f sandbox/Dockerfile.sandbox -t strategy-sandbox:latest sandbox/` |
+| 2 AST 验证器 | 完成 | `bitget_bot/sandbox/ast_validator.py` + `tests/test_ast_validator.py` |
+| 3 Docker 执行器 | 完成 | `bitget_bot/sandbox/docker_executor.py`（`docker run` + subprocess，非 Python SDK）+ `tests/test_docker_executor.py` |
+| 4 策略 API | 完成 | `bitget_bot/strategy_router.py`：`/generate`、`/backtest`、`/backtest/{id}`、`/validate`、`/fix`、`/builtin`；`api.py` 已 `include_router` |
+| 5 Docker 基建 | 完成 | 根 `Dockerfile` 安装 `docker.io`；`docker-compose.yml` 挂载 `docker.sock` |
+| 6 前端导航 + Monaco | 完成 | `App.jsx` 双标签；`package.json` 含 `@monaco-editor/react` |
+| 7 Markdown 编辑器 | 完成 | `frontend/src/components/studio/MarkdownEditor.jsx` |
+| 8 Python 编辑器 | 完成 | `frontend/src/components/studio/CodeEditor.jsx`（Monaco markers） |
+| 9 回测结果面板 | 完成 | `frontend/src/components/studio/BacktestResults.jsx` |
+| 10 Strategy Studio 主页面 | 完成 | `frontend/src/components/StrategyStudio.jsx` |
+| 11 集成验证 | 完成 | 见下方自动化测试 + 浏览器抽检 |
+| 12 Debug 机制 | 完成 | `code_validator.py`、`/validate`、`/fix`、`useCodeValidation.js`、`CodeErrorPanel.jsx` |
+| 13 策略迁移 | 完成 | `bitget_bot/strategies/ma_squeeze_studio.py` + `.md` + `load_default.py`；`tests/test_strategy_migration.py` |
+
+### 本轮收尾修正（验收前）
+
+1. **安全**：已从 `strategy_router.py` 移除硬编码的 DeepSeek API Key；仅使用环境变量 `DEEPSEEK_API_KEY`（`.env.example` 已补充说明，勿将真实密钥提交仓库）。
+2. **默认策略**：`StrategyStudio` 挂载时同时拉取 `GET /api/strategy/builtin/ma_squeeze` 的 **Markdown + Python**，与「加载内置策略」一致。
+3. **回测参数**：`BacktestRequest` 增加 `squeeze_threshold`，与 `ma_squeeze_studio.get_signal` 对齐；前端增加 Squeeze% 输入。
+4. **运行时错误**：回测失败时解析错误串中的 `File "<strategy>", line N` 供错误面板展示。
+5. **白名单**：允许 `from __future__ import annotations`，否则内置策略在 `/validate` 与 Monaco 下会误报安全错误。
+6. **包结构**：新增 `bitget_bot/sandbox/__init__.py`、`pytest.ini`（`integration` marker）。
+
+### 自动化测试结果（验收日）
+
+```text
+pytest tests/ -m "not integration"   → 15 passed
+pytest tests/test_docker_executor.py -m integration → 3 passed
+npm run build (frontend)             → success
+docker build -f sandbox/Dockerfile.sandbox -t strategy-sandbox:latest sandbox/ → success
+```
+
+### 浏览器抽检（Cursor Browser MCP）
+
+- 访问 `http://127.0.0.1:8080/`：标题 **Bitget Bot Dashboard**，存在 **✦ 策略工作台** 标签。
+- 进入策略工作台后可见：**▶ 生成代码**、**📦 加载内置策略**、双 **Editor content**（Monaco）、回测参数含 **Squeeze%**、**▶ 运行回测**（代码加载后可点）。
+
+### 已知限制 / 运维注意
+
+- **AI 生成 / 修复**：未设置 `DEEPSEEK_API_KEY` 时 `/generate` 与 `/fix` 返回 500；本地在 `.env` 配置即可。
+- **沙箱回测**：主机须安装 Docker 且已构建 `strategy-sandbox:latest`；compose 部署需挂载 `docker.sock`（见 `docker-compose.yml`）。
+- **实盘线程**：本机验收时若 `.env` 中 Bitget 密钥无效，后台 bot 线程可能打错误日志，与 Strategy Studio 无直接关系。
