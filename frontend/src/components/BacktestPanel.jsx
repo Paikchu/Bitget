@@ -2,31 +2,30 @@ import { useMemo, useState } from 'react'
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts'
 import dayjs from 'dayjs'
 import useBotStore from '../store/botStore'
-
-const DEFAULT_BACKTEST_FORM = {
-  days: 90,
-  equity: 10000,
-  leverage: 5,
-  fee_rate: 0.05,
-}
+import {
+  DEFAULT_BACKTEST_FORM,
+  formatBacktestForm,
+  parseBacktestForm,
+  sanitizeBacktestInput,
+} from './backtestForm'
 
 const BACKTEST_DEFAULTS_KEY = 'bitget-backtest-defaults'
 
 function loadBacktestDefaults() {
-  if (typeof window === 'undefined') return DEFAULT_BACKTEST_FORM
+  if (typeof window === 'undefined') return formatBacktestForm(DEFAULT_BACKTEST_FORM)
 
   try {
     const raw = window.localStorage.getItem(BACKTEST_DEFAULTS_KEY)
-    if (!raw) return DEFAULT_BACKTEST_FORM
+    if (!raw) return formatBacktestForm(DEFAULT_BACKTEST_FORM)
     const parsed = JSON.parse(raw)
-    return {
+    return formatBacktestForm({
       days: Number(parsed.days) || DEFAULT_BACKTEST_FORM.days,
       equity: Number(parsed.equity) || DEFAULT_BACKTEST_FORM.equity,
       leverage: Number(parsed.leverage) || DEFAULT_BACKTEST_FORM.leverage,
       fee_rate: Number(parsed.fee_rate) || DEFAULT_BACKTEST_FORM.fee_rate,
-    }
+    })
   } catch {
-    return DEFAULT_BACKTEST_FORM
+    return formatBacktestForm(DEFAULT_BACKTEST_FORM)
   }
 }
 
@@ -43,10 +42,10 @@ export default function BacktestPanel() {
 
   const controls = useMemo(
     () => [
-      { key: 'days', label: '天数', min: 7, max: 365, step: 1 },
-      { key: 'equity', label: '初始资金($)', min: 10, step: 1 },
-      { key: 'leverage', label: '杠杆', min: 1, max: 125, step: 1 },
-      { key: 'fee_rate', label: '手续费%/单', min: 0, max: 1, step: '0.01' },
+      { key: 'days', label: '天数', inputMode: 'numeric' },
+      { key: 'equity', label: '初始资金($)', inputMode: 'numeric' },
+      { key: 'leverage', label: '杠杆', inputMode: 'numeric' },
+      { key: 'fee_rate', label: '手续费%/单', inputMode: 'decimal' },
     ],
     [],
   )
@@ -54,7 +53,7 @@ export default function BacktestPanel() {
   function handleSaveDefaults() {
     if (typeof window === 'undefined') return
 
-    window.localStorage.setItem(BACKTEST_DEFAULTS_KEY, JSON.stringify(form))
+    window.localStorage.setItem(BACKTEST_DEFAULTS_KEY, JSON.stringify(parseBacktestForm(form)))
     setSavedNotice('默认回测参数已保存')
     window.setTimeout(() => {
       setSavedNotice((current) => (current === '默认回测参数已保存' ? null : current))
@@ -66,6 +65,7 @@ export default function BacktestPanel() {
     setResult(null)
     setError(null)
     setSavedNotice(null)
+    const parsedForm = parseBacktestForm(form)
     if (!strategyCode?.trim()) {
       setError('暂无可回测的策略代码，请先在右侧生成或加载策略代码')
       setStatus('error')
@@ -77,10 +77,10 @@ export default function BacktestPanel() {
         strategy_version_id: currentStrategyVersion?.id ?? null,
         symbol: 'BTC/USDT:USDT',
         timeframe: '15m',
-        days: form.days,
-        initial_equity: form.equity,
-        leverage: form.leverage,
-        fee_rate: form.fee_rate / 100,   // UI shows 0.05%, API expects 0.0005
+        days: parsedForm.days,
+        initial_equity: parsedForm.equity,
+        leverage: parsedForm.leverage,
+        fee_rate: parsedForm.fee_rate / 100,   // UI shows 0.05%, API expects 0.0005
       }
       const res = await fetch('/api/strategy/backtest', {
         method: 'POST',
@@ -90,24 +90,24 @@ export default function BacktestPanel() {
       const data = await res.json()
       if (!res.ok) throw new Error(data.detail || '回测启动失败')
       const { job_id } = data
-      poll(job_id)
+      poll(job_id, parsedForm.leverage)
     } catch (e) {
       setError(String(e))
       setStatus('error')
     }
   }
 
-  async function poll(jid) {
+  async function poll(jid, leverage) {
     try {
       const r = await fetch(`/api/strategy/backtest/${jid}`)
       const data = await r.json()
       if (data.status === 'running') {
-        setTimeout(() => poll(jid), 2000)
+        setTimeout(() => poll(jid, leverage), 2000)
     } else if (data.status === 'done') {
       setResult(data)
       setStatus('done')
       // Push trades + summary (with leverage) into global store so TradesTable can display them
-      setBacktestResult(data.trades || [], { ...data.summary, _leverage: form.leverage })
+      setBacktestResult(data.trades || [], { ...data.summary, _leverage: leverage })
       if (currentStrategyVersion?.id) {
         bumpVersionHistoryNonce()
       }
@@ -174,7 +174,7 @@ export default function BacktestPanel() {
           onClick={handleSaveDefaults}
           className="rounded-md border border-gray-700 px-3 py-1.5 text-xs font-medium text-gray-300 transition-colors hover:border-gray-500 hover:bg-gray-800 hover:text-gray-100"
         >
-          Set as Default
+          设为默认
         </button>
       </div>
 
@@ -183,10 +183,14 @@ export default function BacktestPanel() {
           <div key={key} className="flex flex-col gap-1">
             <label className="text-xs text-gray-500">{label}</label>
             <input
-              type="number"
-              {...rest}
+              type="text"
               value={form[key]}
-              onChange={(e) => setForm((f) => ({ ...f, [key]: Number(e.target.value) }))}
+              onChange={(e) =>
+                setForm((f) => ({ ...f, [key]: sanitizeBacktestInput(key, e.target.value) }))
+              }
+              autoComplete="off"
+              spellCheck="false"
+              {...rest}
               className="w-24 bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-sm text-white focus:outline-none focus:border-blue-500"
             />
           </div>
