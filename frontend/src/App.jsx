@@ -1,12 +1,8 @@
-import { Component, useState } from 'react'
+import { Component, useEffect, useState } from 'react'
 import { useWebSocket } from './hooks/useWebSocket'
-import StatusBar from './components/StatusBar'
-import CandleChart from './components/CandleChart'
-import EquityChart from './components/EquityChart'
-import StatsPanel from './components/StatsPanel'
-import TradesTable from './components/TradesTable'
-import BacktestPanel from './components/BacktestPanel'
+import DashboardPanels from './components/DashboardPanels'
 import StrategyStudio from './components/StrategyStudio'
+import ResizableSplitPane from './components/ResizableSplitPane'
 
 class ErrorBoundary extends Component {
   constructor(props) {
@@ -27,54 +23,53 @@ class ErrorBoundary extends Component {
   }
 }
 
-const TABS = [
-  { id: 'dashboard', label: '📊 监控面板' },
-  { id: 'studio',    label: '✦ 策略工作台' },
-]
+const LG_MQ = '(min-width: 1024px)'
+
+function useIsLg() {
+  const [wide, setWide] = useState(() =>
+    typeof window !== 'undefined' && window.matchMedia(LG_MQ).matches,
+  )
+  useEffect(() => {
+    const mq = window.matchMedia(LG_MQ)
+    const onChange = () => setWide(mq.matches)
+    mq.addEventListener('change', onChange)
+    return () => mq.removeEventListener('change', onChange)
+  }, [])
+  return wide
+}
 
 function App() {
-  const [activeTab, setActiveTab] = useState('dashboard')
+  const isLg = useIsLg()
   useWebSocket()
 
+  const dashboard = (
+    <ErrorBoundary>
+      <DashboardPanels />
+    </ErrorBoundary>
+  )
+
+  const studio = (
+    <ErrorBoundary>
+      <StrategyStudio />
+    </ErrorBoundary>
+  )
+
   return (
-    <div className="min-h-screen bg-gray-950 text-white">
-      <div className="border-b border-gray-800 bg-gray-950 sticky top-0 z-50">
-        <div className="max-w-screen-2xl mx-auto flex items-center gap-0 px-4">
-          <span className="text-gray-400 text-sm font-mono mr-6 py-3">Bitget Bot</span>
-          {TABS.map(tab => (
-            <button
-              key={tab.id}
-              onClick={() => setActiveTab(tab.id)}
-              className={`px-5 py-3 text-sm font-medium border-b-2 transition-colors ${
-                activeTab === tab.id
-                  ? 'border-blue-500 text-blue-400'
-                  : 'border-transparent text-gray-400 hover:text-gray-200'
-              }`}
-            >
-              {tab.label}
-            </button>
-          ))}
-        </div>
+    <div className="h-full min-h-0 bg-gray-950 text-white flex flex-col overflow-hidden">
+      <header className="border-b border-gray-800 bg-gray-950 z-50 shrink-0 flex items-center px-4 h-12">
+        <span className="text-gray-400 text-sm font-mono">Bitget Bot</span>
+      </header>
+
+      <div className="flex-1 min-h-0 flex flex-col">
+        <ResizableSplitPane
+          direction={isLg ? 'row' : 'col'}
+          minPrimary={isLg ? 300 : 200}
+          minSecondary={isLg ? 320 : 240}
+          storageKey="bitget-dashboard-studio"
+          primary={dashboard}
+          secondary={studio}
+        />
       </div>
-
-      {activeTab === 'dashboard' && (
-        <>
-          <ErrorBoundary><StatusBar /></ErrorBoundary>
-          <div className="max-w-screen-2xl mx-auto p-4 space-y-4">
-            <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-              <div className="lg:col-span-1"><ErrorBoundary><EquityChart /></ErrorBoundary></div>
-              <div className="lg:col-span-2"><ErrorBoundary><CandleChart /></ErrorBoundary></div>
-            </div>
-            <ErrorBoundary><StatsPanel /></ErrorBoundary>
-            <ErrorBoundary><TradesTable /></ErrorBoundary>
-            <ErrorBoundary><BacktestPanel /></ErrorBoundary>
-          </div>
-        </>
-      )}
-
-      {activeTab === 'studio' && (
-        <ErrorBoundary><StrategyStudio /></ErrorBoundary>
-      )}
     </div>
   )
 }

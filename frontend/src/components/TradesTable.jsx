@@ -135,6 +135,7 @@ function BacktestTable() {
         trades={trades.map((t, i) => ({ ...t, id: (page - 1) * pageSize + i + 1 }))}
         leverage={leverage}
         empty="暂无回测交易记录，请先运行回测"
+        maxHeightClass="max-h-[60vh]"
       />
       {totalPages > 1 && (
         <Pagination page={page} totalPages={totalPages} setPage={setPage} />
@@ -143,12 +144,12 @@ function BacktestTable() {
   )
 }
 
-function TableBody({ trades, leverage = 1, empty }) {
+function TableBody({ trades, leverage = 1, empty, maxHeightClass = 'max-h-[56vh]' }) {
   return (
-    <div className="overflow-x-auto">
+    <div className={`left-pane-scrollbar overflow-x-auto overflow-y-auto pr-1 ${maxHeightClass}`}>
       <table className="w-full text-xs">
         <thead>
-          <tr className="text-gray-500 border-b border-gray-800">
+          <tr className="text-gray-500 border-b border-gray-800 sticky top-0 bg-gray-900 z-10">
             <th className="text-left py-2 px-2">#</th>
             <th className="text-left py-2 px-2">方向</th>
             <th className="text-left py-2 px-2">开仓时间</th>
@@ -202,10 +203,31 @@ function Pagination({ page, totalPages, setPage }) {
   )
 }
 
-export default function TradesTable() {
+/**
+ * @param {'toggle' | 'live' | 'backtest'} [variant] — toggle: legacy tab switch; live/backtest: fixed list
+ */
+export default function TradesTable({ variant = 'toggle' }) {
   const backtestTrades = useBotStore((s) => s.backtestTrades)
   const hasBacktest = backtestTrades !== null
   const [mode, setMode] = useState('live')
+
+  if (variant === 'live') {
+    return (
+      <div className="bg-gray-900 rounded-lg p-4">
+        <h2 className="text-sm font-semibold text-gray-400 mb-3">实盘成交记录</h2>
+        <LiveTable />
+      </div>
+    )
+  }
+
+  if (variant === 'backtest') {
+    return (
+      <div className="bg-gray-900 rounded-lg p-4 flex min-h-0 flex-col">
+        <h2 className="text-sm font-semibold text-gray-400 mb-2">回测成交记录</h2>
+        <BacktestTable />
+      </div>
+    )
+  }
 
   return (
     <div className="bg-gray-900 rounded-lg p-4">

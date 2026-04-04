@@ -73,6 +73,28 @@ def init_db() -> None:
                 payload    TEXT,               -- JSON blob, optional
                 created_at TEXT    NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS strategy_versions (
+                id                INTEGER PRIMARY KEY AUTOINCREMENT,
+                version_no        INTEGER NOT NULL UNIQUE,
+                source            TEXT    NOT NULL,
+                title             TEXT,
+                markdown          TEXT    NOT NULL,
+                code              TEXT    NOT NULL,
+                model             TEXT,
+                parent_version_id INTEGER,
+                created_at        TEXT    NOT NULL,
+                CHECK (source IN ('generate', 'builtin_import', 'restore', 'fix'))
+            );
+
+            CREATE TABLE IF NOT EXISTS strategy_version_backtests (
+                id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                strategy_version_id INTEGER NOT NULL,
+                job_id              TEXT    NOT NULL,
+                summary_json        TEXT    NOT NULL,
+                created_at          TEXT    NOT NULL,
+                FOREIGN KEY (strategy_version_id) REFERENCES strategy_versions(id)
+            );
         """)
     log.info("Database ready at %s", _DB_PATH)
 
@@ -137,6 +159,159 @@ def log_event(
             "INSERT INTO bot_events (event_type, message, payload, created_at) VALUES (?,?,?,?)",
             (event_type, message, json.dumps(payload) if payload else None, _now()),
         )
+
+
+def _row_to_dict(row: sqlite3.Row | None) -> Optional[dict]:
+    return dict(row) if row else None
+
+
+def _extract_title(markdown: str) -> Optional[str]:
+    for line in markdown.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("#"):
+            return stripped.lstrip("#").strip() or None
+    return None
+
+
+def get_next_strategy_version_no(conn: sqlite3.Connection) -> int:
+    row = conn.execute("SELECT COALESCE(MAX(version_no), 0) + 1 AS next_no FROM strategy_versions").fetchone()
+    return int(row["next_no"])
+
+
+def create_strategy_version(
+    markdown: str,
+    code: str,
+    source: str,
+    model: Optional[str] = None,
+    parent_version_id: Optional[int] = None,
+) -> dict:
+    with _get_conn() as conn:
+        version_no = get_next_strategy_version_no(conn)
+        created_at = _now()
+        cur = conn.execute(
+            """
+            INSERT INTO strategy_versions
+            (version_no, source, title, markdown, code, model, parent_version_id, created_at)
+            VALUES (?,?,?,?,?,?,?,?)
+            """,
+            (
+                version_no,
+                source,
+                _extract_title(markdown),
+                markdown,
+                code,
+                model,
+                parent_version_id,
+                created_at,
+            ),
+        )
+        version_id = cur.lastrowid
+        row = conn.execute("SELECT * FROM strategy_versions WHERE id = ?", (version_id,)).fetchone()
+    return _hydrate_strategy_version(dict(row))
+
+
+def list_strategy_versions(limit: int = 50, offset: int = 0) -> list[dict]:
+    with _get_conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT
+                v.*,
+                b.summary_json AS latest_backtest_summary_json,
+                b.created_at AS latest_backtest_at
+            FROM strategy_versions v
+            LEFT JOIN strategy_version_backtests b
+              ON b.id = (
+                SELECT sb.id
+                FROM strategy_version_backtests sb
+                WHERE sb.strategy_version_id = v.id
+                ORDER BY sb.id DESC
+                LIMIT 1
+              )
+            ORDER BY v.version_no DESC
+            LIMIT ? OFFSET ?
+            """,
+            (limit, offset),
+        ).fetchall()
+    return [_hydrate_strategy_version(dict(row)) for row in rows]
+
+
+def get_strategy_version(version_id: int) -> Optional[dict]:
+    with _get_conn() as conn:
+        row = conn.execute(
+            """
+            SELECT
+                v.*,
+                b.summary_json AS latest_backtest_summary_json,
+                b.created_at AS latest_backtest_at
+            FROM strategy_versions v
+            LEFT JOIN strategy_version_backtests b
+              ON b.id = (
+                SELECT sb.id
+                FROM strategy_version_backtests sb
+                WHERE sb.strategy_version_id = v.id
+                ORDER BY sb.id DESC
+                LIMIT 1
+              )
+            WHERE v.id = ?
+            """,
+            (version_id,),
+        ).fetchone()
+    return _hydrate_strategy_version(dict(row)) if row else None
+
+
+def get_latest_strategy_version() -> Optional[dict]:
+    with _get_conn() as conn:
+        row = conn.execute(
+            """
+            SELECT
+                v.*,
+                b.summary_json AS latest_backtest_summary_json,
+                b.created_at AS latest_backtest_at
+            FROM strategy_versions v
+            LEFT JOIN strategy_version_backtests b
+              ON b.id = (
+                SELECT sb.id
+                FROM strategy_version_backtests sb
+                WHERE sb.strategy_version_id = v.id
+                ORDER BY sb.id DESC
+                LIMIT 1
+              )
+            ORDER BY v.version_no DESC
+            LIMIT 1
+            """
+        ).fetchone()
+    return _hydrate_strategy_version(dict(row)) if row else None
+
+
+def record_strategy_version_backtest(
+    strategy_version_id: int,
+    job_id: str,
+    summary: dict,
+) -> dict:
+    with _get_conn() as conn:
+        created_at = _now()
+        cur = conn.execute(
+            """
+            INSERT INTO strategy_version_backtests
+            (strategy_version_id, job_id, summary_json, created_at)
+            VALUES (?,?,?,?)
+            """,
+            (strategy_version_id, job_id, json.dumps(summary), created_at),
+        )
+        row = conn.execute(
+            "SELECT * FROM strategy_version_backtests WHERE id = ?",
+            (cur.lastrowid,),
+        ).fetchone()
+    out = dict(row)
+    out["summary"] = json.loads(out.pop("summary_json"))
+    return out
+
+
+def _hydrate_strategy_version(version: dict) -> dict:
+    summary_json = version.pop("latest_backtest_summary_json", None)
+    version["latest_backtest_summary"] = json.loads(summary_json) if summary_json else None
+    version["latest_backtest_at"] = version.get("latest_backtest_at")
+    return version
 
 
 # ─────────────────────────────────────────────────────────────

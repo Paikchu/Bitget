@@ -3,13 +3,19 @@ import { createChart, CrosshairMode, CandlestickSeries, createSeriesMarkers } fr
 import { useOhlcv } from '../hooks/useApi'
 import useBotStore from '../store/botStore'
 
-export default function CandleChart({ symbol = 'BTC/USDT:USDT', timeframe = '15m' }) {
+/** @param {'live' | 'backtest'} markerSource - which trades to show as K-line markers */
+export default function CandleChart({ symbol = 'BTC/USDT:USDT', timeframe = '15m', markerSource = 'live' }) {
   const containerRef = useRef(null)
   const chartRef = useRef(null)
   const seriesRef = useRef(null)
   const markersRef = useRef(null)
   const { data } = useOhlcv(symbol, timeframe)
-  const trades = useBotStore((s) => s.trades)
+  const liveTrades = useBotStore((s) => s.trades)
+  const backtestTrades = useBotStore((s) => s.backtestTrades)
+  const trades =
+    markerSource === 'backtest'
+      ? (Array.isArray(backtestTrades) ? backtestTrades : [])
+      : liveTrades
 
   // Initialize chart once
   useEffect(() => {
@@ -99,6 +105,12 @@ export default function CandleChart({ symbol = 'BTC/USDT:USDT', timeframe = '15m
     <div className="bg-gray-900 rounded-lg p-4">
       <h2 className="text-sm font-semibold text-gray-400 mb-3">
         {symbol} · {timeframe} K线图
+        {markerSource === 'backtest' && (
+          <span className="text-gray-600 font-normal ml-2 text-xs">（回测成交标记）</span>
+        )}
+        {markerSource === 'live' && (
+          <span className="text-gray-600 font-normal ml-2 text-xs">（实盘信号）</span>
+        )}
       </h2>
       <div ref={containerRef} />
     </div>

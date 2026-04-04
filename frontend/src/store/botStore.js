@@ -28,6 +28,19 @@ const useBotStore = create((set) => ({
   backtestTrades: null,   // null = no backtest run yet
   backtestSummary: null,
   setBacktestResult: (trades, summary) => set({ backtestTrades: trades, backtestSummary: summary }),
+
+  strategyCode: '',
+  setStrategyCode: (strategyCode) => set({ strategyCode }),
+
+  strategyVersions: [],
+  currentStrategyVersion: null,
+  isVersionDrawerOpen: false,
+  versionHistoryNonce: 0,
+  setStrategyVersions: (strategyVersions) => set({ strategyVersions }),
+  setCurrentStrategyVersion: (currentStrategyVersion) => set({ currentStrategyVersion }),
+  openVersionDrawer: () => set({ isVersionDrawerOpen: true }),
+  closeVersionDrawer: () => set({ isVersionDrawerOpen: false }),
+  bumpVersionHistoryNonce: () => set((s) => ({ versionHistoryNonce: s.versionHistoryNonce + 1 })),
 }))
 
 export default useBotStore

@@ -1,61 +1,90 @@
-import { useState, useRef, useCallback, useEffect } from 'react'
+import { useState, useCallback, useEffect, startTransition } from 'react'
 import MarkdownEditor, { DEFAULT_MARKDOWN } from './studio/MarkdownEditor'
 import CodeEditor from './studio/CodeEditor'
 import BacktestResults from './studio/BacktestResults'
 import { useCodeValidation } from '../hooks/useCodeValidation'
 import CodeErrorPanel from './studio/CodeErrorPanel'
+import VersionHistoryPanel from './studio/VersionHistoryPanel'
+import useBotStore from '../store/botStore'
 
 const API = '/api/strategy'
-const DEFAULT_PARAMS = {
-  symbol: 'BTC/USDT:USDT',
-  timeframe: '15m',
-  days: 90,
-  initial_equity: 10000,
-  leverage: 5,
-  margin_pct: 100,
-  fee_rate: 0.0005,
-  squeeze_threshold: 0.35,
-}
 
-/** Parse sandbox / Python errors for the error panel (line hint when traceback present). */
-function parseRuntimeError(err) {
-  if (!err || typeof err !== 'string') return null
-  const matches = [...err.matchAll(/File "<strategy>",\s*line\s*(\d+)/g)]
-  const last = matches.length ? parseInt(matches[matches.length - 1][1], 10) : null
-  const lines = err.trim().split('\n')
-  const tail = lines[lines.length - 1] || err
-  return {
-    line: last,
-    message: tail.length > 280 ? `${tail.slice(0, 280)}…` : tail,
-    full_traceback: err.length > 4000 ? `${err.slice(0, 4000)}…` : err,
-  }
-}
+/** Editor stack needs a bounded height so Monaco works inside the scrollable right pane. */
+const EDITOR_BLOCK_CLASS = 'flex-1 min-h-[320px] min-w-0 w-full flex flex-col'
 
 export default function StrategyStudio() {
-  const [markdown, setMarkdown]         = useState(DEFAULT_MARKDOWN)
-  const [code, setCode]                 = useState('')
-  const [generating, setGenerating]     = useState(false)
+  const [workbenchView, setWorkbenchView] = useState('docs')
+  const [markdown, setMarkdown] = useState(DEFAULT_MARKDOWN)
+  const [code, setCode] = useState('')
+  const [generating, setGenerating] = useState(false)
   const [backtestLoading, setBtLoading] = useState(false)
-  const [backtestResult, setBtResult]   = useState(null)
-  const [backtestError, setBtError]     = useState(null)
-  const [params, setParams]             = useState(DEFAULT_PARAMS)
-  const [genError, setGenError]         = useState(null)
+  const [backtestResult, setBtResult] = useState(null)
+  const [backtestError, setBtError] = useState(null)
+  const [genError, setGenError] = useState(null)
   const [runtimeError, setRuntimeError] = useState(null)
-  const [fixing, setFixing]             = useState(false)
-  const pollRef = useRef(null)
+  const [fixing, setFixing] = useState(false)
+  const [versionsLoading, setVersionsLoading] = useState(false)
+  const [versionsError, setVersionsError] = useState(null)
+  const [restoringVersionId, setRestoringVersionId] = useState(null)
+  const setStrategyCode = useBotStore((s) => s.setStrategyCode)
+  const strategyVersions = useBotStore((s) => s.strategyVersions)
+  const currentStrategyVersion = useBotStore((s) => s.currentStrategyVersion)
+  const setStrategyVersions = useBotStore((s) => s.setStrategyVersions)
+  const setCurrentStrategyVersion = useBotStore((s) => s.setCurrentStrategyVersion)
+  const isVersionDrawerOpen = useBotStore((s) => s.isVersionDrawerOpen)
+  const openVersionDrawer = useBotStore((s) => s.openVersionDrawer)
+  const closeVersionDrawer = useBotStore((s) => s.closeVersionDrawer)
+  const versionHistoryNonce = useBotStore((s) => s.versionHistoryNonce)
 
   const { errors: codeErrors, monacoMarkers } = useCodeValidation(code)
 
-  // Default: load built-in MA-squeeze strategy (markdown + code) into both editors
+  const fetchVersions = useCallback(async () => {
+    setVersionsLoading(true)
+    setVersionsError(null)
+    try {
+      const res = await fetch(`${API}/versions`)
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.detail || '加载版本历史失败')
+      startTransition(() => {
+        setStrategyVersions(Array.isArray(data) ? data : [])
+      })
+    } catch (e) {
+      setVersionsError(e.message)
+    } finally {
+      setVersionsLoading(false)
+    }
+  }, [setStrategyVersions])
+
   useEffect(() => {
     fetch(`${API}/builtin/ma_squeeze`)
       .then(r => (r.ok ? r.json() : null))
       .then((data) => {
         if (data?.markdown) setMarkdown(data.markdown)
-        if (data?.code) setCode(data.code)
+        if (data?.code) {
+          setCode(data.code)
+          setStrategyCode(data.code)
+        }
       })
       .catch(() => {})
-  }, [])
+  }, [setStrategyCode])
+
+  useEffect(() => {
+    fetchVersions()
+  }, [fetchVersions, versionHistoryNonce])
+
+  useEffect(() => {
+    setStrategyCode(code || '')
+  }, [code, setStrategyCode])
+
+  useEffect(() => {
+    if (!currentStrategyVersion?.saved_code) return
+    if (
+      code !== currentStrategyVersion.saved_code ||
+      markdown !== currentStrategyVersion.saved_markdown
+    ) {
+      setCurrentStrategyVersion(null)
+    }
+  }, [code, currentStrategyVersion, markdown, setCurrentStrategyVersion])
 
   const handleGenerate = useCallback(async () => {
     setGenerating(true)
@@ -69,12 +98,23 @@ export default function StrategyStudio() {
       const data = await res.json()
       if (!res.ok) throw new Error(data.detail || '生成失败')
       setCode(data.code)
+      setCurrentStrategyVersion(
+        data.version
+          ? {
+              ...data.version,
+              saved_code: data.code,
+              saved_markdown: markdown,
+            }
+          : null,
+      )
+      closeVersionDrawer()
+      fetchVersions()
     } catch (e) {
       setGenError(e.message)
     } finally {
       setGenerating(false)
     }
-  }, [markdown])
+  }, [closeVersionDrawer, fetchVersions, markdown, setCurrentStrategyVersion])
 
   const handleRegenerate = useCallback(() => {
     setCode('')
@@ -87,10 +127,12 @@ export default function StrategyStudio() {
       const data = await res.json()
       setMarkdown(data.markdown)
       setCode(data.code)
+      setCurrentStrategyVersion(null)
+      closeVersionDrawer()
     } catch (e) {
       console.error('Failed to load builtin strategy', e)
     }
-  }, [])
+  }, [closeVersionDrawer, setCurrentStrategyVersion])
 
   const handleAiFix = useCallback(async (errorMessage) => {
     if (!code) return
@@ -114,127 +156,163 @@ export default function StrategyStudio() {
     }
   }, [code, runtimeError])
 
-  const handleBacktest = useCallback(async () => {
-    if (!code?.trim()) { setBtError('请先生成或编写策略代码'); return }
-    clearTimeout(pollRef.current)
-    setBtLoading(true)
-    setBtResult(null)
-    setBtError(null)
-    setRuntimeError(null)
+  const handleRestoreVersion = useCallback(async (version) => {
+    setRestoringVersionId(version.id)
+    setVersionsError(null)
     try {
-      const res = await fetch(`${API}/backtest`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ strategy_code: code, ...params }),
+      const res = await fetch(`${API}/versions/${version.id}`)
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.detail || '载入版本失败')
+      setMarkdown(data.markdown || '')
+      setCode(data.code || '')
+      setCurrentStrategyVersion({
+        id: data.id,
+        version_no: data.version_no,
+        title: data.title,
+        source: data.source,
+        model: data.model,
+        created_at: data.created_at,
+        parent_version_id: data.parent_version_id,
+        saved_code: data.code || '',
+        saved_markdown: data.markdown || '',
       })
-      const { job_id } = await res.json()
-      const poll = async () => {
-        try {
-          const r = await fetch(`${API}/backtest/${job_id}`)
-          const job = await r.json()
-          if (job.status === 'running') {
-            pollRef.current = setTimeout(poll, 2000)
-          } else if (job.status === 'done') {
-            setBtResult(job)
-            setBtLoading(false)
-            setRuntimeError(null)
-            document.getElementById('bt-results')?.scrollIntoView({ behavior: 'smooth' })
-          } else {
-            const msg = job.error || '回测失败'
-            setBtError(msg)
-            setRuntimeError(parseRuntimeError(msg))
-            setBtLoading(false)
-          }
-        } catch { setBtError('轮询失败'); setBtLoading(false) }
-      }
-      pollRef.current = setTimeout(poll, 1500)
+      setWorkbenchView('code')
+      closeVersionDrawer()
     } catch (e) {
-      setBtError(e.message); setBtLoading(false)
+      setVersionsError(e.message)
+    } finally {
+      setRestoringVersionId(null)
     }
-  }, [code, params])
+  }, [closeVersionDrawer, setCurrentStrategyVersion])
+
+  const tabBtn = (id, label) => (
+    <button
+      type="button"
+      onClick={() => setWorkbenchView(id)}
+      role="tab"
+      aria-selected={workbenchView === id}
+      id={`studio-tab-${id}`}
+      className={`px-3 py-1 rounded text-xs font-medium transition-colors ${
+      workbenchView === id
+        ? 'bg-gray-600 text-white'
+        : 'text-gray-400 hover:text-white'
+    }`}
+    >
+      {label}
+    </button>
+  )
 
   return (
-    <div className="flex flex-col" style={{ height: 'calc(100vh - 48px)' }}>
-      {/* Split editor panes */}
-      <div className="flex flex-1 min-h-0">
-        {/* Left: Markdown */}
-        <div className="w-1/2 flex flex-col border-r border-gray-800">
-          <div className="flex-1 min-h-0"><MarkdownEditor value={markdown} onChange={setMarkdown} /></div>
-          <div className="flex items-center gap-2 px-3 py-2 bg-gray-900 border-t border-gray-800">
-            <button onClick={handleGenerate} disabled={generating || !markdown?.trim()}
-              className="flex items-center gap-1.5 px-4 py-1.5 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm rounded-md font-medium transition-colors">
-              {generating ? (
-                <><svg className="animate-spin h-3.5 w-3.5" viewBox="0 0 24 24" fill="none"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>生成中...</>
-              ) : '▶ 生成代码'}
-            </button>
-            {code && <button onClick={handleRegenerate} disabled={generating}
-              className="px-3 py-1.5 text-gray-400 hover:text-gray-200 text-sm border border-gray-700 hover:border-gray-500 rounded-md transition-colors">
-              重新生成
-            </button>}
-            <button onClick={handleLoadBuiltin}
-              className="px-3 py-1.5 text-gray-400 hover:text-gray-200 text-sm border border-gray-700 hover:border-gray-500 rounded-md transition-colors">
-              📦 加载内置策略
-            </button>
-            {genError && <span className="text-red-400 text-xs ml-2">{genError}</span>}
+    <div className="relative flex h-full min-h-0 w-full min-w-0 flex-col overflow-hidden px-4 pb-6 pt-4 box-border">
+      <div className="sticky top-0 z-10 -mx-4 mb-2 border-b border-gray-800 bg-gray-950 px-4 pb-2 pt-0">
+        <div className="flex items-center justify-between rounded-lg border border-gray-800 bg-gray-900 px-2 py-1.5">
+          <h1 className="text-sm font-semibold text-gray-400 px-2">策略工作区</h1>
+          <div
+            className="flex bg-gray-800 rounded p-0.5 gap-0.5"
+            role="tablist"
+            aria-label="策略页面切换"
+          >
+            {tabBtn('docs', '策略文档')}
+            {tabBtn('code', '策略代码')}
           </div>
         </div>
-        {/* Right: Code */}
-        <div className="w-1/2 flex flex-col">
-          <div className="flex-1 min-h-0"><CodeEditor value={code} onChange={setCode} generating={generating} monacoMarkers={monacoMarkers} /></div>
-          <CodeErrorPanel errors={codeErrors} runtimeError={runtimeError} onAiFix={handleAiFix} fixing={fixing} />
-          {code && (
-            <div className="flex items-center gap-2 px-3 py-2 bg-gray-900 border-t border-gray-800">
-              <button onClick={() => navigator.clipboard.writeText(code)}
-                className="px-3 py-1.5 text-gray-400 hover:text-gray-200 text-xs border border-gray-700 hover:border-gray-500 rounded-md transition-colors">
-                📋 复制代码
-              </button>
+      </div>
+
+      <div
+        className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border border-gray-800 bg-gray-950/60"
+        role="tabpanel"
+        aria-labelledby={`studio-tab-${workbenchView}`}
+      >
+        {workbenchView === 'docs' ? (
+          <>
+            <div className={EDITOR_BLOCK_CLASS}>
+              <MarkdownEditor value={markdown} onChange={setMarkdown} />
             </div>
-          )}
+            <div className="flex items-center gap-2 px-3 py-2 bg-gray-900 border-t border-gray-800 flex-wrap">
+              <button
+                onClick={handleGenerate}
+                disabled={generating || !markdown?.trim()}
+                className="flex items-center gap-1.5 px-4 py-1.5 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm rounded-md font-medium transition-colors"
+              >
+                {generating ? (
+                  <>
+                    <svg className="animate-spin h-3.5 w-3.5" viewBox="0 0 24 24" fill="none">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                    </svg>
+                    生成中...
+                  </>
+                ) : (
+                  '▶ 生成代码'
+                )}
+              </button>
+              {code && (
+                <button
+                  onClick={handleRegenerate}
+                  disabled={generating}
+                  className="px-3 py-1.5 text-gray-400 hover:text-gray-200 text-sm border border-gray-700 hover:border-gray-500 rounded-md transition-colors"
+                >
+                  重新生成
+                </button>
+              )}
+              <button
+                onClick={handleLoadBuiltin}
+                className="px-3 py-1.5 text-gray-400 hover:text-gray-200 text-sm border border-gray-700 hover:border-gray-500 rounded-md transition-colors"
+              >
+                📦 加载内置策略
+              </button>
+              <button
+                onClick={openVersionDrawer}
+                className="px-3 py-1.5 text-gray-400 hover:text-gray-200 text-sm border border-gray-700 hover:border-gray-500 rounded-md transition-colors"
+              >
+                🕘 历史版本
+              </button>
+              {genError && <span className="text-red-400 text-xs ml-2">{genError}</span>}
+            </div>
+          </>
+        ) : (
+          <>
+            <div className={EDITOR_BLOCK_CLASS}>
+              <CodeEditor
+                value={code}
+                onChange={setCode}
+                generating={generating}
+                monacoMarkers={monacoMarkers}
+              />
+            </div>
+            <CodeErrorPanel errors={codeErrors} runtimeError={runtimeError} onAiFix={handleAiFix} fixing={fixing} />
+            {code && (
+              <div className="flex items-center gap-2 px-3 py-2 bg-gray-900 border-t border-gray-800">
+                <button
+                  type="button"
+                  onClick={() => navigator.clipboard.writeText(code)}
+                  className="px-3 py-1.5 text-gray-400 hover:text-gray-200 text-xs border border-gray-700 hover:border-gray-500 rounded-md transition-colors"
+                >
+                  📋 复制代码
+                </button>
+              </div>
+            )}
+          </>
+        )}
+      </div>
+
+      <VersionHistoryPanel
+        open={isVersionDrawerOpen}
+        versions={strategyVersions}
+        currentVersion={currentStrategyVersion}
+        loading={versionsLoading}
+        restoring={Boolean(restoringVersionId)}
+        error={versionsError}
+        onRefresh={fetchVersions}
+        onRestore={handleRestoreVersion}
+        onClose={closeVersionDrawer}
+      />
+
+      {(backtestLoading || backtestResult || backtestError) && (
+        <div id="bt-results" className="max-h-[40%] shrink-0 overflow-y-auto border-t border-gray-800">
+          <BacktestResults result={backtestResult} loading={backtestLoading} error={backtestError} />
         </div>
-      </div>
-
-      {/* Backtest params bar */}
-      <div className="flex items-center gap-3 px-4 py-2.5 bg-gray-900 border-t border-gray-700 flex-wrap">
-        <span className="text-xs text-gray-500 font-mono">回测参数</span>
-        <label className="flex items-center gap-1.5 text-xs text-gray-400">
-          交易对
-          <input value={params.symbol} onChange={e => setParams(p => ({...p, symbol: e.target.value}))}
-            className="bg-gray-800 border border-gray-700 rounded px-2 py-1 w-36 text-gray-200 text-xs" />
-        </label>
-        <label className="flex items-center gap-1.5 text-xs text-gray-400">
-          天数
-          <input type="number" min="7" max="365" value={params.days} onChange={e => setParams(p => ({...p, days: +e.target.value}))}
-            className="bg-gray-800 border border-gray-700 rounded px-2 py-1 w-16 text-gray-200 text-xs" />
-        </label>
-        <label className="flex items-center gap-1.5 text-xs text-gray-400">
-          杠杆
-          <input type="number" min="1" max="50" value={params.leverage} onChange={e => setParams(p => ({...p, leverage: +e.target.value}))}
-            className="bg-gray-800 border border-gray-700 rounded px-2 py-1 w-14 text-gray-200 text-xs" />
-          <span className="text-gray-600">x</span>
-        </label>
-        <label className="flex items-center gap-1.5 text-xs text-gray-400">
-          初始资金
-          <input type="number" min="100" value={params.initial_equity} onChange={e => setParams(p => ({...p, initial_equity: +e.target.value}))}
-            className="bg-gray-800 border border-gray-700 rounded px-2 py-1 w-20 text-gray-200 text-xs" />
-          <span className="text-gray-600">USDT</span>
-        </label>
-        <label className="flex items-center gap-1.5 text-xs text-gray-400">
-          Squeeze%
-          <input type="number" step="0.01" min="0.05" max="5" value={params.squeeze_threshold} onChange={e => setParams(p => ({...p, squeeze_threshold: +e.target.value}))}
-            className="bg-gray-800 border border-gray-700 rounded px-2 py-1 w-16 text-gray-200 text-xs" />
-        </label>
-        <button onClick={handleBacktest} disabled={backtestLoading || !code}
-          className="ml-auto flex items-center gap-1.5 px-4 py-1.5 bg-green-700 hover:bg-green-600 disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm rounded-md font-medium transition-colors">
-          {backtestLoading ? (
-            <><svg className="animate-spin h-3.5 w-3.5" viewBox="0 0 24 24" fill="none"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>运行中...</>
-          ) : '▶ 运行回测'}
-        </button>
-      </div>
-
-      {/* Backtest results */}
-      <div id="bt-results" className="overflow-y-auto max-h-[45vh] border-t border-gray-800">
-        <BacktestResults result={backtestResult} loading={backtestLoading} error={backtestError} />
-      </div>
+      )}
     </div>
   )
 }

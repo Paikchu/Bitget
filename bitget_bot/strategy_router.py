@@ -22,6 +22,8 @@ import ccxt
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
+from bitget_bot import db as _db
+
 log = logging.getLogger("bitget_bot.strategy_router")
 
 router = APIRouter(prefix="/api/strategy")
@@ -66,8 +68,21 @@ def get_signal(df: pd.DataFrame, i: int, params: dict) -> dict:
 4. get_signal 中用 df['column'].iloc[i-1] 访问历史数据
 5. get_signal 开头做边界检查（如 if i < 20: return {四个 False}）
 6. 代码必须可直接运行，不含 TODO 或占位符
+7. 若策略使用最近 N 根 K 线最高价/最低价作为突破或止损参考，窗口必须排除当前 bar；也就是在 get_signal 中读取这些 rolling 值时，应使用 df['xxx'].iloc[i-1]，再和当前 bar 的 close/volume 做比较。
 
 只输出 Python 代码，不含任何 Markdown 代码块标记，代码以 import 语句开头。"""
+
+
+_WINDOW_LOOKBACK_COLUMNS = ("high_20", "low_20", "high_10", "low_10")
+
+
+def _normalize_generated_code(code: str) -> str:
+    normalized = code.strip()
+    for column in _WINDOW_LOOKBACK_COLUMNS:
+        pattern = rf"df\[(['\"])({re.escape(column)})\1\]\.iloc\[i\]"
+        replacement = rf"df[\1\2\1].iloc[i-1]"
+        normalized = re.sub(pattern, replacement, normalized)
+    return normalized
 
 
 # ─────────────────────────────────────────────────────────────
@@ -111,6 +126,7 @@ class GenerateRequest(BaseModel):
 
 class BacktestRequest(BaseModel):
     strategy_code: str
+    strategy_version_id: Optional[int] = None
     symbol: str = "BTC/USDT:USDT"
     timeframe: str = "15m"
     days: int = 90
@@ -135,11 +151,7 @@ def generate_strategy(req: GenerateRequest):
         )
 
     try:
-        from openai import OpenAI
-        client = OpenAI(
-            api_key=api_key,
-            base_url="https://api.deepseek.com/v1",
-        )
+        client = _make_deepseek_client(api_key)
         response = client.chat.completions.create(
             model=req.model,
             messages=[
@@ -153,12 +165,60 @@ def generate_strategy(req: GenerateRequest):
         # Strip markdown fences if present
         code = re.sub(r"^```(?:python)?\s*\n?", "", raw_code.strip(), flags=re.IGNORECASE)
         code = re.sub(r"\n?```\s*$", "", code.strip())
-        return {"code": code.strip(), "model": req.model}
+        code = _normalize_generated_code(code)
+        version = _persist_generated_version(req.markdown, code, req.model)
+        return {"code": code, "model": req.model, "version": _serialize_version_summary(version)}
     except HTTPException:
         raise
     except Exception as exc:
         log.exception("DeepSeek API call failed")
         raise HTTPException(status_code=502, detail=f"DeepSeek API error: {exc}")
+
+
+def _make_deepseek_client(api_key: str):
+    from openai import OpenAI
+
+    return OpenAI(
+        api_key=api_key,
+        base_url="https://api.deepseek.com/v1",
+    )
+
+
+def _persist_generated_version(markdown: str, code: str, model: str) -> dict:
+    return _db.create_strategy_version(
+        markdown=markdown,
+        code=code,
+        source="generate",
+        model=model,
+    )
+
+
+def _serialize_version_summary(version: dict) -> dict:
+    return {
+        "id": version["id"],
+        "version_no": version["version_no"],
+        "title": version.get("title"),
+        "source": version["source"],
+        "model": version.get("model"),
+        "created_at": version["created_at"],
+        "parent_version_id": version.get("parent_version_id"),
+        "latest_backtest_summary": version.get("latest_backtest_summary"),
+        "latest_backtest_at": version.get("latest_backtest_at"),
+    }
+
+
+@router.get("/versions")
+def list_versions(limit: int = 50, offset: int = 0):
+    versions = _db.list_strategy_versions(limit=limit, offset=offset)
+    return [_serialize_version_summary(version) for version in versions]
+
+
+@router.get("/versions/{version_id}")
+def get_version(version_id: int):
+    version = _db.get_strategy_version(version_id)
+    if not version:
+        raise HTTPException(status_code=404, detail="Strategy version not found")
+    return version
 
 
 # ─────────────────────────────────────────────────────────────
@@ -188,6 +248,12 @@ def start_backtest(req: BacktestRequest):
                 "squeeze_threshold": req.squeeze_threshold,
             }
             result = run_strategy_in_sandbox(req.strategy_code, ohlcv, params)
+            if req.strategy_version_id and result.get("summary"):
+                _db.record_strategy_version_backtest(
+                    strategy_version_id=req.strategy_version_id,
+                    job_id=job_id,
+                    summary=result["summary"],
+                )
             _jobs[job_id] = {
                 "status": "done",
                 "job_id": job_id,

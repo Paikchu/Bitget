@@ -1,34 +1,95 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts'
 import dayjs from 'dayjs'
 import useBotStore from '../store/botStore'
 
+const DEFAULT_BACKTEST_FORM = {
+  days: 90,
+  equity: 10000,
+  leverage: 5,
+  fee_rate: 0.05,
+}
+
+const BACKTEST_DEFAULTS_KEY = 'bitget-backtest-defaults'
+
+function loadBacktestDefaults() {
+  if (typeof window === 'undefined') return DEFAULT_BACKTEST_FORM
+
+  try {
+    const raw = window.localStorage.getItem(BACKTEST_DEFAULTS_KEY)
+    if (!raw) return DEFAULT_BACKTEST_FORM
+    const parsed = JSON.parse(raw)
+    return {
+      days: Number(parsed.days) || DEFAULT_BACKTEST_FORM.days,
+      equity: Number(parsed.equity) || DEFAULT_BACKTEST_FORM.equity,
+      leverage: Number(parsed.leverage) || DEFAULT_BACKTEST_FORM.leverage,
+      fee_rate: Number(parsed.fee_rate) || DEFAULT_BACKTEST_FORM.fee_rate,
+    }
+  } catch {
+    return DEFAULT_BACKTEST_FORM
+  }
+}
+
 export default function BacktestPanel() {
-  const [form, setForm] = useState({ days: 90, squeeze: 0.35, equity: 10000, leverage: 5, fee_rate: 0.05 })
+  const [form, setForm] = useState(loadBacktestDefaults)
   const [status, setStatus] = useState(null)
   const [result, setResult] = useState(null)
   const [error, setError] = useState(null)
+  const [savedNotice, setSavedNotice] = useState(null)
   const setBacktestResult = useBotStore((s) => s.setBacktestResult)
+  const strategyCode = useBotStore((s) => s.strategyCode)
+  const currentStrategyVersion = useBotStore((s) => s.currentStrategyVersion)
+  const bumpVersionHistoryNonce = useBotStore((s) => s.bumpVersionHistoryNonce)
+
+  const controls = useMemo(
+    () => [
+      { key: 'days', label: '天数', min: 7, max: 365, step: 1 },
+      { key: 'equity', label: '初始资金($)', min: 10, step: 1 },
+      { key: 'leverage', label: '杠杆', min: 1, max: 125, step: 1 },
+      { key: 'fee_rate', label: '手续费%/单', min: 0, max: 1, step: '0.01' },
+    ],
+    [],
+  )
+
+  function handleSaveDefaults() {
+    if (typeof window === 'undefined') return
+
+    window.localStorage.setItem(BACKTEST_DEFAULTS_KEY, JSON.stringify(form))
+    setSavedNotice('默认回测参数已保存')
+    window.setTimeout(() => {
+      setSavedNotice((current) => (current === '默认回测参数已保存' ? null : current))
+    }, 2500)
+  }
 
   async function runBacktest() {
     setStatus('running')
     setResult(null)
     setError(null)
+    setSavedNotice(null)
+    if (!strategyCode?.trim()) {
+      setError('暂无可回测的策略代码，请先在右侧生成或加载策略代码')
+      setStatus('error')
+      return
+    }
     try {
       const payload = {
+        strategy_code: strategyCode,
+        strategy_version_id: currentStrategyVersion?.id ?? null,
         symbol: 'BTC/USDT:USDT',
+        timeframe: '15m',
         days: form.days,
-        squeeze: form.squeeze,
-        equity: form.equity,
+        initial_equity: form.equity,
         leverage: form.leverage,
         fee_rate: form.fee_rate / 100,   // UI shows 0.05%, API expects 0.0005
       }
-      const res = await fetch('/api/backtest', {
+      const res = await fetch('/api/strategy/backtest', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
       })
-      const { job_id } = await res.json()
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.detail || '回测启动失败')
+      const { job_id } = data
       poll(job_id)
     } catch (e) {
       setError(String(e))
@@ -38,7 +99,7 @@ export default function BacktestPanel() {
 
   async function poll(jid) {
     try {
-      const r = await fetch(`/api/backtest/${jid}`)
+      const r = await fetch(`/api/strategy/backtest/${jid}`)
       const data = await r.json()
       if (data.status === 'running') {
         setTimeout(() => poll(jid), 2000)
@@ -47,6 +108,9 @@ export default function BacktestPanel() {
       setStatus('done')
       // Push trades + summary (with leverage) into global store so TradesTable can display them
       setBacktestResult(data.trades || [], { ...data.summary, _leverage: form.leverage })
+      if (currentStrategyVersion?.id) {
+        bumpVersionHistoryNonce()
+      }
       } else {
         setError(data.error || 'Unknown error')
         setStatus('error')
@@ -99,17 +163,23 @@ export default function BacktestPanel() {
     : []
 
   return (
-    <div className="bg-gray-900 rounded-lg p-4">
-      <h2 className="text-sm font-semibold text-gray-400 mb-4">回测面板</h2>
+    <div className="bg-gray-900 rounded-lg p-3">
+      <div className="mb-3 flex items-center justify-between gap-3">
+        <div>
+          <h2 className="text-sm font-semibold text-gray-300">运行策略</h2>
+          <p className="mt-1 text-xs text-gray-500">回测参数会沿用你保存的默认值。</p>
+        </div>
+        <button
+          type="button"
+          onClick={handleSaveDefaults}
+          className="rounded-md border border-gray-700 px-3 py-1.5 text-xs font-medium text-gray-300 transition-colors hover:border-gray-500 hover:bg-gray-800 hover:text-gray-100"
+        >
+          Set as Default
+        </button>
+      </div>
 
-      <div className="flex flex-wrap gap-4 items-end mb-4">
-        {[
-          { key: 'days', label: '天数', min: 7, max: 365, step: 1 },
-          { key: 'squeeze', label: 'Squeeze阈值', step: '0.01', min: 0.1, max: 1 },
-          { key: 'equity', label: '初始资金($)', min: 10, step: 1 },
-          { key: 'leverage', label: '杠杆', min: 1, max: 125, step: 1 },
-          { key: 'fee_rate', label: '手续费%/单', min: 0, max: 1, step: '0.01' },
-        ].map(({ key, label, ...rest }) => (
+      <div className="flex flex-wrap gap-3 items-end mb-3">
+        {controls.map(({ key, label, ...rest }) => (
           <div key={key} className="flex flex-col gap-1">
             <label className="text-xs text-gray-500">{label}</label>
             <input
@@ -130,6 +200,8 @@ export default function BacktestPanel() {
         </button>
       </div>
 
+      {savedNotice && <div className="mb-3 text-xs text-green-400">{savedNotice}</div>}
+
       {status === 'running' && (
         <div className="text-blue-400 text-sm mb-3 flex items-center gap-2">
           <span className="w-3 h-3 border-2 border-blue-400 border-t-transparent rounded-full animate-spin" />
@@ -140,7 +212,7 @@ export default function BacktestPanel() {
       {error && <div className="text-red-400 text-sm mb-3">错误: {error}</div>}
 
       {result?.summary && (
-        <div className="space-y-4">
+        <div className="space-y-3">
           <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
             {summaryCards.map(({ label, value, color = 'text-white' }) => (
               <div key={label} className="bg-gray-800 rounded p-3 text-center">
@@ -152,8 +224,7 @@ export default function BacktestPanel() {
 
           {result.equity_curve?.length > 0 && (
             <div>
-              <h3 className="text-xs text-gray-500 mb-2">权益曲线</h3>
-              <ResponsiveContainer width="100%" height={180}>
+              <ResponsiveContainer width="100%" height={156}>
                 <LineChart data={result.equity_curve}>
                   <XAxis
                     dataKey="ts"

@@ -1,1 +1,44 @@
 @import "tailwindcss";
+
+/* Lock app to the viewport so split panes get a bounded height and scroll independently. */
+html,
+body {
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+}
+
+#root {
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* Dark, low-contrast scrollbars for the left dashboard pane and its internal tables. */
+.left-pane-scrollbar {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(31, 41, 55, 0.9) transparent;
+}
+
+.left-pane-scrollbar::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+.left-pane-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.left-pane-scrollbar::-webkit-scrollbar-thumb {
+  background: rgba(31, 41, 55, 0.9);
+  border-radius: 9999px;
+  border: 1px solid rgba(3, 7, 18, 0.92);
+}
+
+.left-pane-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: rgba(55, 65, 81, 0.95);
+}
+
+.left-pane-scrollbar::-webkit-scrollbar-corner {
+  background: transparent;
+}

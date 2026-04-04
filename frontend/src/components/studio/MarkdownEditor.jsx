@@ -58,10 +58,6 @@ BTC/USDT 永续合约，15 分钟 K 线
 export default function MarkdownEditor({ value, onChange }) {
   return (
     <div className="flex flex-col h-full">
-      <div className="flex items-center justify-between px-3 py-2 bg-gray-900 border-b border-gray-700">
-        <span className="text-xs text-gray-400 font-mono">📝 策略文档 (Markdown)</span>
-        <span className="text-xs text-gray-600">描述你的策略，AI 将自动翻译为代码</span>
-      </div>
       <div className="flex-1 min-h-0">
         <Editor
           height="100%"
@@ -77,6 +73,12 @@ export default function MarkdownEditor({ value, onChange }) {
             scrollBeyondLastLine: false,
             renderLineHighlight: 'none',
             padding: { top: 12, bottom: 12 },
+            renderValidationDecorations: 'off',
+            unicodeHighlight: {
+              ambiguousCharacters: false,
+              invisibleCharacters: false,
+              nonBasicASCII: false,
+            },
           }}
         />
       </div>

@@ -38,16 +38,6 @@ export default function CodeEditor({ value, onChange, generating, monacoMarkers 
 
   return (
     <div className="flex flex-col h-full relative">
-      <div className="flex items-center justify-between px-3 py-2 bg-gray-900 border-b border-gray-700">
-        <span className="text-xs text-gray-400 font-mono">🐍 策略代码 (Python)</span>
-        {generating ? (
-          <span className="text-xs text-blue-400 animate-pulse">AI 生成中...</span>
-        ) : value ? (
-          <span className="text-xs text-green-500">✓ 已生成，可手动修改</span>
-        ) : (
-          <span className="text-xs text-gray-600">等待生成</span>
-        )}
-      </div>
       <div className="flex-1 min-h-0">
         <Editor
           height="100%"
