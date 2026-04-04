@@ -1,7 +1,7 @@
 import Editor from '@monaco-editor/react'
 import { useRef, useEffect } from 'react'
 
-const PLACEHOLDER_CODE = `# 点击左侧的「▶ 生成代码」按钮，AI 将根据你的策略描述自动生成 Python 代码
+const PLACEHOLDER_CODE = `# 点击下方的“生成代码”按钮，AI 将根据你的策略描述自动生成 Python 代码
 
 import numpy as np
 import pandas as pd

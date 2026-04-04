@@ -1,6 +1,13 @@
 import useSWR from 'swr'
 
-const fetcher = (url) => fetch(url).then((r) => r.json())
+async function fetcher(url) {
+  const response = await fetch(url)
+  const data = await response.json()
+  if (!response.ok) {
+    throw new Error(data.detail || '请求失败')
+  }
+  return data
+}
 
 export function useStatus() {
   return useSWR('/api/status', fetcher, { refreshInterval: 5000 })
@@ -22,4 +29,34 @@ export function useOhlcv(symbol = 'BTC/USDT:USDT', timeframe = '15m') {
     fetcher,
     { refreshInterval: 60000 },
   )
+}
+
+export function useSettings(enabled = true) {
+  return useSWR(enabled ? '/api/settings' : null, fetcher)
+}
+
+export async function updateSettings(payload) {
+  const response = await fetch('/api/settings', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+  const data = await response.json()
+  if (!response.ok) {
+    throw new Error(data.detail || '保存失败')
+  }
+  return data
+}
+
+export async function testSettingsConnection(payload) {
+  const response = await fetch('/api/settings/test', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+  const data = await response.json()
+  if (!response.ok) {
+    throw new Error(data.detail || '测试失败')
+  }
+  return data
 }

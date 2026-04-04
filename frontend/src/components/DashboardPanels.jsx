@@ -27,7 +27,7 @@ export default function DashboardPanels() {
   const [activePage, setActivePage] = useState('live')
 
   return (
-    <div className="max-w-screen-2xl mx-auto h-full w-full min-w-0 flex min-h-0 flex-col overflow-hidden px-4 pb-6 pt-4 box-border">
+    <div className="max-w-screen-2xl mx-auto h-full w-full min-w-0 flex min-h-0 flex-col overflow-hidden px-4 pb-6 pt-0 box-border">
       <div className="sticky top-0 z-10 -mx-4 mb-2 border-b border-gray-800 bg-gray-950 px-4 pb-2 pt-0">
         <div className="flex items-center justify-between rounded-lg border border-gray-800 bg-gray-900 px-2 py-1.5">
           <h1 className="text-sm text-gray-400 font-semibold px-2">监控看板</h1>

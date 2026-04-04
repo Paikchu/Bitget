@@ -29,7 +29,9 @@ export function useWebSocket() {
               setStatus(msg.data)
               break
           }
-        } catch (_) {}
+        } catch {
+          // Ignore malformed websocket payloads and wait for the next message.
+        }
       }
 
       ws.onclose = () => {

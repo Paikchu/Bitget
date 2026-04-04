@@ -11,7 +11,7 @@ import os
 import sys
 import time
 from datetime import datetime, timezone
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from dotenv import load_dotenv
 
@@ -50,14 +50,15 @@ def _env_int(key: str, default: int) -> int:
     return int(v)
 
 
-def make_exchange() -> Any:
+def make_exchange(config: Optional[dict[str, Any]] = None) -> Any:
+    config = config or {}
     import ccxt
 
     ex = ccxt.bitget(
         {
-            "apiKey": os.environ.get("BITGET_API_KEY", ""),
-            "secret": os.environ.get("BITGET_API_SECRET", ""),
-            "password": os.environ.get("BITGET_API_PASSPHRASE", ""),
+            "apiKey": config.get("BITGET_API_KEY", os.environ.get("BITGET_API_KEY", "")),
+            "secret": config.get("BITGET_API_SECRET", os.environ.get("BITGET_API_SECRET", "")),
+            "password": config.get("BITGET_API_PASSPHRASE", os.environ.get("BITGET_API_PASSPHRASE", "")),
             "options": {"defaultType": "swap"},
             "enableRateLimit": True,
         }
@@ -482,37 +483,98 @@ def start_loop(
     dry_run: bool,
     db_state: Optional[dict] = None,
     poll_interval: int = 60,
+    config_provider: Optional[Callable[[], dict[str, Any]]] = None,
+    on_config_applied: Optional[Callable[[dict[str, Any] | None, str | None], None]] = None,
 ) -> None:
     """
     Blocking trading loop for programmatic use (e.g. a background thread from api.py).
     All parameters are explicit — no argparse, no env-var side-effects.
     This function never returns; it is designed to run inside a daemon thread.
     """
-    ex = make_exchange()
-    ex.load_markets()
+    def _snapshot_config() -> dict[str, Any]:
+        if config_provider is None:
+            return {
+                "BITGET_API_KEY": os.environ.get("BITGET_API_KEY", ""),
+                "BITGET_API_SECRET": os.environ.get("BITGET_API_SECRET", ""),
+                "BITGET_API_PASSPHRASE": os.environ.get("BITGET_API_PASSPHRASE", ""),
+                "SYMBOL": symbol,
+                "TIMEFRAME": timeframe,
+                "SQUEEZE_THRESHOLD": squeeze,
+                "MARGIN_USAGE_PCT": margin_pct,
+                "LEVERAGE": lev,
+                "DRY_RUN": dry_run,
+                "POLL_INTERVAL": poll_interval,
+                "INITIAL_EQUITY": db_state.get("running_equity", 0.0) if db_state else 0.0,
+            }
+        return config_provider()
 
-    if not dry_run:
-        try:
-            ex.set_leverage(lev, symbol)
-        except Exception as e:
-            log.warning("set_leverage: %s", e)
+    def _build_exchange(config: dict[str, Any]) -> Any:
+        ex = make_exchange(config)
+        ex.load_markets()
+        if not config["DRY_RUN"]:
+            try:
+                ex.set_leverage(config["LEVERAGE"], config["SYMBOL"])
+            except Exception as e:
+                log.warning("set_leverage: %s", e)
+        return ex
 
-    log.info("start_loop: %s %s lev=%dx dry_run=%s", symbol, timeframe, lev, dry_run)
+    ex = None
+    current_config = _snapshot_config()
+    current_signature = None
     last_bar_ts: Optional[int] = None
 
     while True:
         try:
-            ohlcv = fetch_closed_ohlcv(ex, symbol, timeframe, limit=300)
+            pending_config = _snapshot_config()
+            pending_signature = (
+                pending_config["BITGET_API_KEY"],
+                pending_config["BITGET_API_SECRET"],
+                pending_config["BITGET_API_PASSPHRASE"],
+                pending_config["SYMBOL"],
+                pending_config["TIMEFRAME"],
+                pending_config["SQUEEZE_THRESHOLD"],
+                pending_config["MARGIN_USAGE_PCT"],
+                pending_config["LEVERAGE"],
+                pending_config["DRY_RUN"],
+                pending_config["POLL_INTERVAL"],
+            )
+            if ex is None or pending_signature != current_signature:
+                ex = _build_exchange(pending_config)
+                current_config = pending_config
+                current_signature = pending_signature
+                if on_config_applied is not None:
+                    on_config_applied(current_config, None)
+                log.info(
+                    "start_loop config applied: %s %s lev=%dx dry_run=%s",
+                    current_config["SYMBOL"],
+                    current_config["TIMEFRAME"],
+                    current_config["LEVERAGE"],
+                    current_config["DRY_RUN"],
+                )
+
+            ohlcv = fetch_closed_ohlcv(ex, current_config["SYMBOL"], current_config["TIMEFRAME"], limit=300)
             bar_ts = ohlcv[-1][0] if ohlcv else None
             new_bar = bar_ts is not None and bar_ts != last_bar_ts
             if new_bar:
                 last_bar_ts = bar_ts
-                run_cycle(ex, symbol, timeframe, squeeze, margin_pct, lev, dry_run, db_state=db_state)
+                run_cycle(
+                    ex,
+                    current_config["SYMBOL"],
+                    current_config["TIMEFRAME"],
+                    current_config["SQUEEZE_THRESHOLD"],
+                    current_config["MARGIN_USAGE_PCT"],
+                    current_config["LEVERAGE"],
+                    current_config["DRY_RUN"],
+                    db_state=db_state,
+                )
                 if db_state is not None and bar_ts is not None:
                     _db_snapshot_equity(bar_ts, db_state)
         except Exception as e:
             log.exception("cycle error: %s", e)
-        time.sleep(max(5, poll_interval))
+            if on_config_applied is not None:
+                on_config_applied(None, str(e))
+        interval = current_config["POLL_INTERVAL"] if current_config else poll_interval
+        time.sleep(max(5, interval))
 
 
 if __name__ == "__main__":

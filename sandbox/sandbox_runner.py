@@ -280,7 +280,11 @@ def _run_backtest(ohlcv: list, strategy_ns: dict, params: dict) -> dict:
 def main():
     _apply_resource_limits()
     try:
-        payload = json.loads(sys.stdin.read())
+        if len(sys.argv) > 1:
+            with open(sys.argv[1], "r", encoding="utf-8") as f:
+                payload = json.load(f)
+        else:
+            payload = json.loads(sys.stdin.read())
         code = payload["strategy_code"]
         ohlcv = payload["ohlcv"]
         params = payload.get("params", {})

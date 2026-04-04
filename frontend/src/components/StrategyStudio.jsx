@@ -203,7 +203,7 @@ export default function StrategyStudio() {
   )
 
   return (
-    <div className="relative flex h-full min-h-0 w-full min-w-0 flex-col overflow-hidden px-4 pb-6 pt-4 box-border">
+    <div className="relative flex h-full min-h-0 w-full min-w-0 flex-col overflow-hidden px-4 pb-6 pt-0 box-border">
       <div className="sticky top-0 z-10 -mx-4 mb-2 border-b border-gray-800 bg-gray-950 px-4 pb-2 pt-0">
         <div className="flex items-center justify-between rounded-lg border border-gray-800 bg-gray-900 px-2 py-1.5">
           <h1 className="text-sm font-semibold text-gray-400 px-2">策略工作区</h1>
@@ -243,7 +243,7 @@ export default function StrategyStudio() {
                     生成中...
                   </>
                 ) : (
-                  '▶ 生成代码'
+                  '生成代码'
                 )}
               </button>
               {code && (
@@ -259,13 +259,13 @@ export default function StrategyStudio() {
                 onClick={handleLoadBuiltin}
                 className="px-3 py-1.5 text-gray-400 hover:text-gray-200 text-sm border border-gray-700 hover:border-gray-500 rounded-md transition-colors"
               >
-                📦 加载内置策略
+                加载内置策略
               </button>
               <button
                 onClick={openVersionDrawer}
                 className="px-3 py-1.5 text-gray-400 hover:text-gray-200 text-sm border border-gray-700 hover:border-gray-500 rounded-md transition-colors"
               >
-                🕘 历史版本
+                历史版本
               </button>
               {genError && <span className="text-red-400 text-xs ml-2">{genError}</span>}
             </div>
@@ -288,7 +288,7 @@ export default function StrategyStudio() {
                   onClick={() => navigator.clipboard.writeText(code)}
                   className="px-3 py-1.5 text-gray-400 hover:text-gray-200 text-xs border border-gray-700 hover:border-gray-500 rounded-md transition-colors"
                 >
-                  📋 复制代码
+                  复制代码
                 </button>
               </div>
             )}

@@ -44,6 +44,11 @@ from pydantic import BaseModel
 
 from bitget_bot import db as _db
 from bitget_bot.runner import start_loop
+from bitget_bot.settings_manager import SettingsValidationError
+from bitget_bot.settings_manager import load_runtime_settings
+from bitget_bot.settings_manager import load_settings_snapshot
+from bitget_bot.settings_manager import save_settings
+from bitget_bot.settings_manager import test_settings_connections
 from bitget_bot.strategy_router import router as strategy_router
 
 logging.basicConfig(
@@ -78,6 +83,13 @@ def _int(key: str, default: int) -> int:
 
 _bot_config: dict = {}
 _bot_running = threading.Event()
+_runtime_lock = threading.Lock()
+_runtime_config: dict = {
+    "settings": {},
+    "version": 0,
+    "applied_version": 0,
+    "last_apply_error": "",
+}
 
 # Active WebSocket connections — only touched by async coroutines (no lock needed)
 _ws_clients: list[WebSocket] = []
@@ -103,6 +115,8 @@ def _bot_thread(db_state: dict) -> None:
             dry_run=_bot_config["dry_run"],
             db_state=db_state,
             poll_interval=_bot_config["poll_interval"],
+            config_provider=_bot_runtime_provider,
+            on_config_applied=_mark_config_applied,
         )
     except Exception:
         log.exception("Bot thread crashed")
@@ -177,24 +191,20 @@ async def _ws_broadcaster() -> None:
 async def lifespan(app: FastAPI):
     load_dotenv()
     _db.init_db()
-
-    _bot_config.update(
-        symbol=os.environ.get("SYMBOL", "BTC/USDT:USDT"),
-        timeframe=os.environ.get("TIMEFRAME", "15m"),
-        squeeze=_float("SQUEEZE_THRESHOLD", 0.35),
-        margin_pct=_float("MARGIN_USAGE_PCT", 100.0),
-        lev=_int("LEVERAGE", 5),
-        dry_run=_bool("DRY_RUN", True),
-        poll_interval=_int("POLL_INTERVAL", 60),
-        initial_equity=_float("INITIAL_EQUITY", 10_000.0),
-    )
+    runtime_settings = load_runtime_settings(_settings_env_path())
+    with _runtime_lock:
+        _runtime_config["settings"] = runtime_settings.copy()
+        _runtime_config["version"] = 1
+        _runtime_config["applied_version"] = 0
+        _runtime_config["last_apply_error"] = ""
+    _sync_bot_config(runtime_settings)
 
     db_state: dict = {
         "trade_id": None,
         "direction": None,
         "entry_price": 0.0,
         "notional": 0.0,
-        "running_equity": _bot_config["initial_equity"],
+        "running_equity": runtime_settings["INITIAL_EQUITY"],
     }
 
     threading.Thread(
@@ -244,7 +254,110 @@ def api_status():
         "current_equity": round(current, 2),
         "initial_equity": initial,
         "return_pct": round((current - initial) / initial * 100, 2) if initial else 0.0,
+        "runtime": {
+            "config_version": _runtime_config.get("version", 0),
+            "applied_version": _runtime_config.get("applied_version", 0),
+            "last_apply_error": _runtime_config.get("last_apply_error", ""),
+        },
     }
+
+
+def _settings_env_path() -> Path:
+    return Path(__file__).resolve().parent.parent / ".env"
+
+
+def _runtime_settings_snapshot() -> dict:
+    with _runtime_lock:
+        return dict(_runtime_config.get("settings", {}))
+
+
+def _sync_bot_config(settings: dict) -> None:
+    _bot_config.update(
+        symbol=settings["SYMBOL"],
+        timeframe=settings["TIMEFRAME"],
+        squeeze=settings["SQUEEZE_THRESHOLD"],
+        margin_pct=settings["MARGIN_USAGE_PCT"],
+        lev=settings["LEVERAGE"],
+        dry_run=settings["DRY_RUN"],
+        poll_interval=settings["POLL_INTERVAL"],
+        initial_equity=settings["INITIAL_EQUITY"],
+    )
+
+
+def _bot_runtime_provider() -> dict:
+    return _runtime_settings_snapshot()
+
+
+def _mark_config_applied(settings: dict | None, error: str | None) -> None:
+    with _runtime_lock:
+        if error:
+            _runtime_config["last_apply_error"] = error
+        elif settings is not None:
+            _runtime_config["applied_version"] = _runtime_config["version"]
+            _runtime_config["last_apply_error"] = ""
+            _runtime_config["settings"] = settings.copy()
+            _sync_bot_config(settings)
+
+
+def _apply_runtime_settings(payload: dict) -> dict:
+    result = save_settings(payload, env_path=_settings_env_path())
+    settings = result["settings"]
+    for key, value in settings.items():
+        os.environ[key] = "true" if value is True else "false" if value is False else str(value)
+    with _runtime_lock:
+        _runtime_config["settings"] = settings.copy()
+        _runtime_config["version"] = int(_runtime_config.get("version", 0)) + 1
+        _runtime_config["last_apply_error"] = ""
+    _sync_bot_config(settings)
+    return result
+
+
+class SettingsUpdateRequest(BaseModel):
+    BITGET_API_KEY: str | None = None
+    BITGET_API_SECRET: str | None = None
+    BITGET_API_PASSPHRASE: str | None = None
+    SYMBOL: str | None = None
+    TIMEFRAME: str | None = None
+    LEVERAGE: int | None = None
+    DRY_RUN: bool | None = None
+    POLL_INTERVAL: int | None = None
+    INITIAL_EQUITY: float | None = None
+    MARGIN_USAGE_PCT: float | None = None
+    SQUEEZE_THRESHOLD: float | None = None
+    DEEPSEEK_API_KEY: str | None = None
+
+
+@app.get("/api/settings")
+def api_get_settings():
+    return load_settings_snapshot(_settings_env_path(), _runtime_config)
+
+
+@app.put("/api/settings")
+def api_put_settings(req: SettingsUpdateRequest):
+    payload = req.model_dump(exclude_unset=True)
+    try:
+        result = _apply_runtime_settings(payload)
+    except SettingsValidationError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+    runtime = {
+        "config_version": _runtime_config["version"],
+        "applied_version": _runtime_config["applied_version"],
+        "last_apply_error": _runtime_config["last_apply_error"],
+    }
+    return {
+        "applied": runtime["config_version"] == runtime["applied_version"],
+        "updates": (result or {}).get("updates", payload),
+        "runtime": runtime,
+    }
+
+
+@app.post("/api/settings/test")
+def api_test_settings(req: SettingsUpdateRequest):
+    payload = req.model_dump(exclude_unset=True)
+    current = load_runtime_settings(_settings_env_path())
+    merged = {**current, **payload}
+    return test_settings_connections(merged)
 
 
 # ─────────────────────────────────────────────────────────────
