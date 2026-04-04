@@ -96,6 +96,7 @@ def init_db() -> None:
                 FOREIGN KEY (strategy_version_id) REFERENCES strategy_versions(id)
             );
         """)
+        ensure_default_strategy_version(conn)
     log.info("Database ready at %s", _DB_PATH)
 
 
@@ -176,6 +177,33 @@ def _extract_title(markdown: str) -> Optional[str]:
 def get_next_strategy_version_no(conn: sqlite3.Connection) -> int:
     row = conn.execute("SELECT COALESCE(MAX(version_no), 0) + 1 AS next_no FROM strategy_versions").fetchone()
     return int(row["next_no"])
+
+
+def ensure_default_strategy_version(conn: sqlite3.Connection) -> None:
+    row = conn.execute("SELECT COUNT(*) AS count FROM strategy_versions").fetchone()
+    if int(row["count"]) != 0:
+        return
+
+    from bitget_bot.strategies.load_default import BUILTIN_STRATEGIES
+
+    default_strategy = BUILTIN_STRATEGIES["ma_squeeze"]
+    conn.execute(
+        """
+        INSERT INTO strategy_versions
+        (version_no, source, title, markdown, code, model, parent_version_id, created_at)
+        VALUES (?,?,?,?,?,?,?,?)
+        """,
+        (
+            1,
+            "builtin_import",
+            _extract_title(default_strategy["markdown"]) or default_strategy["name"],
+            default_strategy["markdown"],
+            default_strategy["code"],
+            None,
+            None,
+            _now(),
+        ),
+    )
 
 
 def create_strategy_version(

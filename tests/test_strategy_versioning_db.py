@@ -30,6 +30,24 @@ def test_init_db_creates_strategy_versions_table(monkeypatch, tmp_path):
     assert row is not None
 
 
+def test_init_db_seeds_builtin_strategy_once_for_empty_database(monkeypatch, tmp_path):
+    db = _load_db_module(monkeypatch, tmp_path)
+
+    db.init_db()
+    db.init_db()
+
+    listing = db.list_strategy_versions()
+    detail = db.get_latest_strategy_version()
+
+    assert len(listing) == 1
+    assert detail["version_no"] == 1
+    assert detail["source"] == "builtin_import"
+    assert detail["parent_version_id"] is None
+    assert detail["model"] is None
+    assert detail["markdown"]
+    assert detail["code"]
+
+
 def test_create_strategy_version_increments_version_numbers(monkeypatch, tmp_path):
     db = _load_db_module(monkeypatch, tmp_path)
     db.init_db()
@@ -48,8 +66,8 @@ def test_create_strategy_version_increments_version_numbers(monkeypatch, tmp_pat
         parent_version_id=first["id"],
     )
 
-    assert first["version_no"] == 1
-    assert second["version_no"] == 2
+    assert first["version_no"] == 2
+    assert second["version_no"] == 3
     assert second["parent_version_id"] == first["id"]
 
 
@@ -74,9 +92,10 @@ def test_list_and_get_latest_strategy_versions(monkeypatch, tmp_path):
     listing = db.list_strategy_versions()
     detail = db.get_strategy_version(created["id"])
 
-    assert latest["version_no"] == 2
-    assert listing[0]["version_no"] == 2
-    assert listing[1]["version_no"] == 1
+    assert latest["version_no"] == 3
+    assert listing[0]["version_no"] == 3
+    assert listing[1]["version_no"] == 2
+    assert listing[2]["version_no"] == 1
     assert detail["markdown"] == "# V2"
     assert detail["code"] == "print('v2')"
     assert detail["source"] == "restore"
