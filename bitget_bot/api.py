@@ -403,25 +403,87 @@ def api_equity(days: int = 30):
 #  GET /api/ohlcv
 # ─────────────────────────────────────────────────────────────
 
+_OHLCV_PRODUCT_TYPE_BY_SETTLE = {
+    "USDT": "USDT-FUTURES",
+    "USDC": "USDC-FUTURES",
+}
+
+
+def _product_type_for_market(market: dict, symbol: str) -> str:
+    if market.get("settle") in _OHLCV_PRODUCT_TYPE_BY_SETTLE:
+        return _OHLCV_PRODUCT_TYPE_BY_SETTLE[market["settle"]]
+    if market.get("settle"):
+        return "COIN-FUTURES"
+    raise ValueError(f"Unsupported Bitget market for OHLCV pagination: {symbol}")
+
+
+def _floor_ts(ts_ms: int, timeframe_ms: int) -> int:
+    return (ts_ms // timeframe_ms) * timeframe_ms
+
+
+def _fetch_ohlcv_history_page(exchange, symbol: str, timeframe: str, limit: int, before_ts: Optional[int]) -> tuple[list, int]:
+    timeframe_ms = int(exchange.parse_timeframe(timeframe) * 1000)
+    capped_limit = max(1, min(limit, 200))
+    end_ts = _floor_ts(before_ts if before_ts is not None else exchange.milliseconds(), timeframe_ms)
+    start_ts = max(0, end_ts - min(90 * 24 * 60 * 60 * 1000, capped_limit * timeframe_ms))
+    exchange.load_markets()
+    market = exchange.market(symbol)
+    response = exchange.publicMixGetV2MixMarketHistoryCandles(
+        {
+            "symbol": market["id"],
+            "productType": _product_type_for_market(market, symbol),
+            "granularity": timeframe,
+            "limit": str(capped_limit),
+            "startTime": str(start_ts),
+            "endTime": str(end_ts),
+        }
+    )
+    rows = response.get("data") or []
+    return rows, end_ts
+
 @app.get("/api/ohlcv")
 def api_ohlcv(
     symbol: str = "BTC/USDT:USDT",
     timeframe: str = "15m",
     limit: int = 200,
+    before_ts: int | None = None,
 ):
     try:
         ex = ccxt.bitget({"options": {"defaultType": "swap"}, "enableRateLimit": True})
-        raw = ex.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit + 1)
         tf_ms = int(ex.parse_timeframe(timeframe) * 1000)
         now_ms = ex.milliseconds()
-        closed = [r for r in raw if r[0] + tf_ms <= now_ms][-limit:]
+        raw, end_ts = _fetch_ohlcv_history_page(ex, symbol, timeframe, limit, before_ts)
+        seen = set()
+        closed = []
+        for row in sorted(raw, key=lambda item: int(item[0])):
+            ts = int(row[0])
+            if ts in seen or ts + tf_ms > now_ms:
+                continue
+            seen.add(ts)
+            closed.append(row)
+        capped_limit = max(1, min(limit, 200))
+        next_before_ts = int(closed[0][0]) if closed else end_ts
         return {
             "symbol": symbol,
             "timeframe": timeframe,
             "candles": [
-                {"ts": r[0], "open": r[1], "high": r[2], "low": r[3], "close": r[4], "volume": r[5]}
+                {
+                    "ts": int(r[0]),
+                    "open": float(r[1]),
+                    "high": float(r[2]),
+                    "low": float(r[3]),
+                    "close": float(r[4]),
+                    "volume": float(r[5]),
+                }
                 for r in closed
             ],
+            "page": {
+                "requested_before_ts": before_ts,
+                "returned": len(closed),
+                "limit": capped_limit,
+                "next_before_ts": next_before_ts,
+                "has_more": bool(closed) and len(raw) >= capped_limit,
+            },
         }
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"OHLCV fetch failed: {exc}")

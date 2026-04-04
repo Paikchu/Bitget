@@ -1,6 +1,6 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { createChart, CrosshairMode, CandlestickSeries, createSeriesMarkers } from 'lightweight-charts'
-import { useOhlcv } from '../hooks/useApi'
+import { fetchOhlcvPage } from '../hooks/useApi'
 import useBotStore from '../store/botStore'
 
 /** @param {'live' | 'backtest'} markerSource - which trades to show as K-line markers */
@@ -9,13 +9,33 @@ export default function CandleChart({ symbol = 'BTC/USDT:USDT', timeframe = '15m
   const chartRef = useRef(null)
   const seriesRef = useRef(null)
   const markersRef = useRef(null)
-  const { data } = useOhlcv(symbol, timeframe)
+  const candlesRef = useRef([])
+  const symbolRef = useRef(symbol)
+  const timeframeRef = useRef(timeframe)
+  const nextBeforeTsRef = useRef(null)
+  const hasMoreRef = useRef(true)
+  const loadingMoreRef = useRef(false)
+  const preserveRangeRef = useRef(null)
+  const initialViewportSetRef = useRef(false)
+  const [candles, setCandles] = useState([])
   const liveTrades = useBotStore((s) => s.trades)
   const backtestTrades = useBotStore((s) => s.backtestTrades)
   const trades =
     markerSource === 'backtest'
       ? (Array.isArray(backtestTrades) ? backtestTrades : [])
       : liveTrades
+
+  const mergeCandles = (incoming, existing) => {
+    const seen = new Set()
+    const merged = []
+    const sorted = [...incoming, ...existing].sort((a, b) => a.ts - b.ts)
+    sorted.forEach((candle) => {
+      if (seen.has(candle.ts)) return
+      seen.add(candle.ts)
+      merged.push(candle)
+    })
+    return merged
+  }
 
   // Initialize chart once
   useEffect(() => {
@@ -48,6 +68,16 @@ export default function CandleChart({ symbol = 'BTC/USDT:USDT', timeframe = '15m
     seriesRef.current = series
     markersRef.current = markers
 
+    const onVisibleLogicalRangeChange = (range) => {
+      if (!range) return
+      if (range.from > 20) return
+      if (!hasMoreRef.current || loadingMoreRef.current || !nextBeforeTsRef.current) return
+      const previousRange = chart.timeScale().getVisibleLogicalRange()
+      void loadPage(nextBeforeTsRef.current, { prepend: true, previousRange })
+    }
+
+    chart.timeScale().subscribeVisibleLogicalRangeChange(onVisibleLogicalRangeChange)
+
     const ro = new ResizeObserver(() => {
       if (containerRef.current) {
         chart.applyOptions({ width: containerRef.current.clientWidth })
@@ -57,22 +87,89 @@ export default function CandleChart({ symbol = 'BTC/USDT:USDT', timeframe = '15m
 
     return () => {
       ro.disconnect()
+      chart.timeScale().unsubscribeVisibleLogicalRangeChange(onVisibleLogicalRangeChange)
       chart.remove()
     }
   }, [])
 
-  // Load OHLCV candles
   useEffect(() => {
-    if (!seriesRef.current || !data?.candles) return
-    const candles = data.candles.map((c) => ({
+    candlesRef.current = candles
+  }, [candles])
+
+  useEffect(() => {
+    symbolRef.current = symbol
+    timeframeRef.current = timeframe
+  }, [symbol, timeframe])
+
+  async function loadPage(beforeTs, { prepend = false, previousRange = null } = {}) {
+    if (loadingMoreRef.current) return
+    loadingMoreRef.current = true
+    try {
+      const page = await fetchOhlcvPage({
+        symbol: symbolRef.current,
+        timeframe: timeframeRef.current,
+        limit: 200,
+        beforeTs,
+      })
+      const incoming = Array.isArray(page?.candles) ? page.candles : []
+      nextBeforeTsRef.current = page?.page?.next_before_ts ?? null
+      hasMoreRef.current = Boolean(page?.page?.has_more)
+
+      setCandles((prev) => {
+        const merged = prepend ? mergeCandles(incoming, prev) : mergeCandles(incoming, [])
+        if (prepend && previousRange && merged.length > prev.length) {
+          const addedCount = merged.length - prev.length
+          preserveRangeRef.current = {
+            from: previousRange.from + addedCount,
+            to: previousRange.to + addedCount,
+          }
+        } else if (!prepend) {
+          initialViewportSetRef.current = false
+          preserveRangeRef.current = null
+        }
+        return merged
+      })
+    } catch (error) {
+      console.error('Failed to load OHLCV page', error)
+    } finally {
+      loadingMoreRef.current = false
+    }
+  }
+
+  // Load initial OHLCV page on symbol/timeframe changes
+  useEffect(() => {
+    setCandles([])
+    candlesRef.current = []
+    nextBeforeTsRef.current = null
+    hasMoreRef.current = true
+    loadingMoreRef.current = false
+    preserveRangeRef.current = null
+    initialViewportSetRef.current = false
+    void loadPage(null)
+  }, [symbol, timeframe])
+
+  // Push OHLCV candles into chart
+  useEffect(() => {
+    if (!seriesRef.current) return
+    const chartCandles = candles.map((c) => ({
       time: Math.floor(c.ts / 1000),
       open: c.open,
       high: c.high,
       low: c.low,
       close: c.close,
     }))
-    seriesRef.current.setData(candles)
-  }, [data])
+    seriesRef.current.setData(chartCandles)
+    if (!chartRef.current) return
+    if (!initialViewportSetRef.current && chartCandles.length > 0) {
+      chartRef.current.timeScale().fitContent()
+      initialViewportSetRef.current = true
+      return
+    }
+    if (preserveRangeRef.current) {
+      chartRef.current.timeScale().setVisibleLogicalRange(preserveRangeRef.current)
+      preserveRangeRef.current = null
+    }
+  }, [candles])
 
   // Update trade signal markers
   useEffect(() => {

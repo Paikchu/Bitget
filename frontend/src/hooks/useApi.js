@@ -31,6 +31,23 @@ export function useOhlcv(symbol = 'BTC/USDT:USDT', timeframe = '15m') {
   )
 }
 
+export async function fetchOhlcvPage({
+  symbol = 'BTC/USDT:USDT',
+  timeframe = '15m',
+  limit = 200,
+  beforeTs = null,
+} = {}) {
+  const params = new URLSearchParams({
+    symbol,
+    timeframe,
+    limit: String(limit),
+  })
+  if (beforeTs !== null && beforeTs !== undefined) {
+    params.set('before_ts', String(beforeTs))
+  }
+  return fetcher(`/api/ohlcv?${params.toString()}`)
+}
+
 export function useSettings(enabled = true) {
   return useSWR(enabled ? '/api/settings' : null, fetcher)
 }
