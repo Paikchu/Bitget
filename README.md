@@ -111,11 +111,17 @@ make docker-up
 常用命令：
 
 ```bash
+make docker-build
 make docker-ps
 make docker-logs
 make docker-restart
 make docker-down
 ```
+
+说明：
+
+- 当前机器上 `docker compose build` 走 BuildKit 可能卡住，项目默认的 `Makefile` 已固定为 `DOCKER_BUILDKIT=0`
+- 如果你要强制切回 BuildKit，可以显式传入 `DOCKER_BUILDKIT=1`
 
 ### 3. 本地开发启动
 
@@ -136,6 +142,28 @@ make dev
 - 本地开发模式默认启动 `uvicorn bitget_bot.api:app --reload`
 - 前端产物由 Docker 构建阶段生成，当前根目录并没有集成一套独立的前后端联调脚本
 - 如果你修改了前端界面，按当前项目约定应优先执行 `make docker-up` 重新构建镜像，而不是只重启容器
+
+### 4. 浏览器验收
+
+项目内提供了一个基于 Playwright 的本地浏览器验收脚本，不依赖 MCP 的只读根目录会话路径。
+
+首次安装 Chromium：
+
+```bash
+make browser-install
+```
+
+执行页面验收：
+
+```bash
+make browser-check
+```
+
+如需改验收地址或断言文本：
+
+```bash
+make browser-check BROWSER_URL=http://127.0.0.1:8092 BROWSER_EXPECT_TEXT=实验回测
+```
 
 ## 环境变量
 

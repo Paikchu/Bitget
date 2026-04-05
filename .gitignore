@@ -10,3 +10,6 @@ data/*.db-shm
 data/*.db-wal
 
 output/
+
+.playwright-cli/
+.playwright-browsers/

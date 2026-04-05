@@ -408,6 +408,20 @@ _OHLCV_PRODUCT_TYPE_BY_SETTLE = {
     "USDC": "USDC-FUTURES",
 }
 
+_BITGET_HISTORY_GRANULARITY = {
+    "1m": "1m",
+    "3m": "3m",
+    "5m": "5m",
+    "15m": "15m",
+    "30m": "30m",
+    "1h": "1H",
+    "4h": "4H",
+    "6h": "6H",
+    "12h": "12H",
+    "1d": "1D",
+    "1w": "1W",
+}
+
 
 def _product_type_for_market(market: dict, symbol: str) -> str:
     if market.get("settle") in _OHLCV_PRODUCT_TYPE_BY_SETTLE:
@@ -421,6 +435,10 @@ def _floor_ts(ts_ms: int, timeframe_ms: int) -> int:
     return (ts_ms // timeframe_ms) * timeframe_ms
 
 
+def _bitget_history_granularity(timeframe: str) -> str:
+    return _BITGET_HISTORY_GRANULARITY.get(timeframe, timeframe)
+
+
 def _fetch_ohlcv_history_page(exchange, symbol: str, timeframe: str, limit: int, before_ts: Optional[int]) -> tuple[list, int]:
     timeframe_ms = int(exchange.parse_timeframe(timeframe) * 1000)
     capped_limit = max(1, min(limit, 200))
@@ -432,7 +450,7 @@ def _fetch_ohlcv_history_page(exchange, symbol: str, timeframe: str, limit: int,
         {
             "symbol": market["id"],
             "productType": _product_type_for_market(market, symbol),
-            "granularity": timeframe,
+            "granularity": _bitget_history_granularity(timeframe),
             "limit": str(capped_limit),
             "startTime": str(start_ts),
             "endTime": str(end_ts),

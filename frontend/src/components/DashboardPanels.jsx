@@ -25,6 +25,7 @@ function PanelShell({ subtitle, children }) {
  */
 export default function DashboardPanels() {
   const [activePage, setActivePage] = useState('live')
+  const [backtestTimeframe, setBacktestTimeframe] = useState('15m')
 
   return (
     <div className="max-w-screen-2xl mx-auto h-full w-full min-w-0 flex min-h-0 flex-col overflow-hidden px-4 pb-6 pt-0 box-border">
@@ -81,8 +82,8 @@ export default function DashboardPanels() {
           </PanelShell>
         ) : (
           <PanelShell>
-            <CandleChart markerSource="backtest" />
-            <BacktestPanel />
+            <CandleChart markerSource="backtest" timeframe={backtestTimeframe} />
+            <BacktestPanel timeframe={backtestTimeframe} onTimeframeChange={setBacktestTimeframe} />
             <TradesTable variant="backtest" />
           </PanelShell>
         )}

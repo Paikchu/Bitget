@@ -23,6 +23,7 @@ test('sanitizeBacktestInput keeps decimal typing stable for fee rate', () => {
 
 test('parseBacktestForm returns numbers and falls back on invalid blanks', () => {
   const parsed = parseBacktestForm({
+    timeframe: '4h',
     days: '100',
     equity: '',
     leverage: '7',
@@ -30,6 +31,7 @@ test('parseBacktestForm returns numbers and falls back on invalid blanks', () =>
   })
 
   assert.deepEqual(parsed, {
+    timeframe: '4h',
     days: 100,
     equity: DEFAULT_BACKTEST_FORM.equity,
     leverage: 7,
@@ -39,9 +41,22 @@ test('parseBacktestForm returns numbers and falls back on invalid blanks', () =>
 
 test('formatBacktestForm turns numeric defaults into controlled string values', () => {
   assert.deepEqual(formatBacktestForm(DEFAULT_BACKTEST_FORM), {
+    timeframe: '15m',
     days: '90',
     equity: '10000',
     leverage: '5',
     fee_rate: '0.05',
   })
+})
+
+test('parseBacktestForm falls back to default timeframe when empty', () => {
+  const parsed = parseBacktestForm({
+    timeframe: '',
+    days: '90',
+    equity: '10000',
+    leverage: '5',
+    fee_rate: '0.05',
+  })
+
+  assert.equal(parsed.timeframe, DEFAULT_BACKTEST_FORM.timeframe)
 })

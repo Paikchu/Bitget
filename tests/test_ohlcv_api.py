@@ -81,3 +81,27 @@ def test_get_ohlcv_filters_out_unclosed_future_candle(monkeypatch):
     body = response.json()
     assert [candle["ts"] for candle in body["candles"]] == [1710000000000]
     assert body["page"]["returned"] == 1
+
+
+def test_get_ohlcv_maps_hourly_granularity_for_bitget_history_endpoint(monkeypatch):
+    rows = [
+        ["1710000000000", "100", "110", "90", "105", "10", "1000"],
+    ]
+
+    class _HourlyFakeBitgetExchange(_FakeBitgetExchange):
+        def parse_timeframe(self, timeframe):
+            assert timeframe == "4h"
+            return 4 * 60 * 60
+
+    fake_exchange = _HourlyFakeBitgetExchange(rows, now_ms=1710018000000)
+    client = TestClient(api.app)
+    monkeypatch.setattr(api.ccxt, "bitget", lambda *_args, **_kwargs: fake_exchange)
+
+    response = client.get(
+        "/api/ohlcv",
+        params={"symbol": "BTC/USDT:USDT", "timeframe": "4h", "limit": 1},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["timeframe"] == "4h"
+    assert fake_exchange.calls[0]["granularity"] == "4H"

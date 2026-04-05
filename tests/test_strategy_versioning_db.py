@@ -29,6 +29,21 @@ def test_init_db_creates_strategy_versions_table(monkeypatch, tmp_path):
 
     assert row is not None
 
+    with db._get_conn() as conn:
+        experiments = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='strategy_experiments'"
+        ).fetchone()
+        runs = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='strategy_experiment_runs'"
+        ).fetchone()
+        feedback = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='strategy_experiment_feedback'"
+        ).fetchone()
+
+    assert experiments is not None
+    assert runs is not None
+    assert feedback is not None
+
 
 def test_init_db_seeds_builtin_strategy_once_for_empty_database(monkeypatch, tmp_path):
     db = _load_db_module(monkeypatch, tmp_path)
@@ -129,3 +144,59 @@ def test_latest_backtest_summary_is_joined_to_version_listing(monkeypatch, tmp_p
     assert listing[0]["latest_backtest_summary"]["total_return_pct"] == 18.0
     assert listing[0]["latest_backtest_at"] is not None
     assert detail["latest_backtest_summary"]["total_trades"] == 11
+
+
+def test_experiment_runs_and_feedback_are_persisted(monkeypatch, tmp_path):
+    db = _load_db_module(monkeypatch, tmp_path)
+    db.init_db()
+
+    version = db.create_strategy_version(
+        markdown="# V1",
+        code="print('v1')",
+        source="generate",
+        model="deepseek-chat",
+    )
+
+    experiment = db.create_strategy_experiment(
+        strategy_version_id=version["id"],
+        strategy_code="print('v1')",
+        config={
+            "symbol": "BTC/USDT:USDT",
+            "parameter_grid": {"timeframe": ["15m"], "days": [90]},
+        },
+        scenario_summary=["15m-90d"],
+        job_id="exp-1",
+    )
+
+    db.add_strategy_experiment_run(
+        experiment_id=experiment["id"],
+        run_key="run-1",
+        params={"timeframe": "15m", "days": 90},
+        scenario_tag="15m-90d",
+        result={
+            "summary": {"total_return_pct": 3.5, "max_drawdown_pct": 2.0},
+            "trades": [{"direction": "long"}],
+        },
+    )
+    db.save_strategy_experiment_feedback(
+        experiment_id=experiment["id"],
+        feedback={
+            "overall_score": 78,
+            "confidence": 0.72,
+            "top_issues": [],
+            "evidence": [],
+        },
+        prompt_version="v1",
+        schema_version="feedback.v1",
+        model="deepseek-chat",
+    )
+
+    loaded = db.get_strategy_experiment(experiment["id"])
+    runs = db.list_strategy_experiment_runs(experiment["id"])
+    feedback = db.get_strategy_experiment_feedback(experiment["id"])
+
+    assert loaded["job_id"] == "exp-1"
+    assert loaded["scenario_summary"] == ["15m-90d"]
+    assert runs[0]["scenario_tag"] == "15m-90d"
+    assert runs[0]["result"]["summary"]["total_return_pct"] == 3.5
+    assert feedback["feedback"]["overall_score"] == 78

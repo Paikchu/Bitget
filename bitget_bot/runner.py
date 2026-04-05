@@ -54,16 +54,40 @@ def make_exchange(config: Optional[dict[str, Any]] = None) -> Any:
     config = config or {}
     import ccxt
 
+    api_key = _normalize_secret(config.get("BITGET_API_KEY", os.environ.get("BITGET_API_KEY", "")))
+    secret = _normalize_secret(config.get("BITGET_API_SECRET", os.environ.get("BITGET_API_SECRET", "")))
+    password = _normalize_secret(config.get("BITGET_API_PASSPHRASE", os.environ.get("BITGET_API_PASSPHRASE", "")))
+
     ex = ccxt.bitget(
         {
-            "apiKey": config.get("BITGET_API_KEY", os.environ.get("BITGET_API_KEY", "")),
-            "secret": config.get("BITGET_API_SECRET", os.environ.get("BITGET_API_SECRET", "")),
-            "password": config.get("BITGET_API_PASSPHRASE", os.environ.get("BITGET_API_PASSPHRASE", "")),
+            "apiKey": api_key,
+            "secret": secret,
+            "password": password,
             "options": {"defaultType": "swap"},
             "enableRateLimit": True,
         }
     )
     return ex
+
+
+def _normalize_secret(value: Any) -> str:
+    text = str(value or "").strip()
+    placeholder_tokens = {
+        "your_api_key_here",
+        "your_api_secret_here",
+        "your_passphrase_here",
+        "changeme",
+    }
+    return "" if text.lower() in placeholder_tokens else text
+
+
+def _to_jsonable_primitive(value: Any) -> Any:
+    if hasattr(value, "item"):
+        try:
+            return value.item()
+        except Exception:
+            return value
+    return value
 
 
 def timeframe_ms(ex: Any, timeframe: str) -> int:
@@ -204,11 +228,11 @@ def _db_log_signal(sig: Any, bar_ts_ms: int, symbol: str) -> None:
             {
                 "symbol": symbol,
                 "bar_ts": ts,
-                "long_entry": sig.long_entry,
-                "short_entry": sig.short_entry,
-                "close_long": sig.close_long,
-                "close_short": sig.close_short,
-                "is_squeezed": sig.is_squeezed,
+                "long_entry": bool(_to_jsonable_primitive(sig.long_entry)),
+                "short_entry": bool(_to_jsonable_primitive(sig.short_entry)),
+                "close_long": bool(_to_jsonable_primitive(sig.close_long)),
+                "close_short": bool(_to_jsonable_primitive(sig.close_short)),
+                "is_squeezed": bool(_to_jsonable_primitive(sig.is_squeezed)),
             },
         )
     except Exception as exc:

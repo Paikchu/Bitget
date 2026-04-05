@@ -95,6 +95,44 @@ def init_db() -> None:
                 created_at          TEXT    NOT NULL,
                 FOREIGN KEY (strategy_version_id) REFERENCES strategy_versions(id)
             );
+
+            CREATE TABLE IF NOT EXISTS strategy_experiments (
+                id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                strategy_version_id INTEGER,
+                strategy_code       TEXT    NOT NULL,
+                job_id              TEXT    NOT NULL,
+                status              TEXT    NOT NULL,
+                config_json         TEXT    NOT NULL,
+                scenario_summary_json TEXT  NOT NULL,
+                aggregate_summary_json TEXT,
+                error               TEXT,
+                created_at          TEXT    NOT NULL,
+                updated_at          TEXT    NOT NULL,
+                FOREIGN KEY (strategy_version_id) REFERENCES strategy_versions(id)
+            );
+
+            CREATE TABLE IF NOT EXISTS strategy_experiment_runs (
+                id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                experiment_id  INTEGER NOT NULL,
+                run_key        TEXT    NOT NULL,
+                params_json    TEXT    NOT NULL,
+                scenario_tag   TEXT    NOT NULL,
+                result_json    TEXT    NOT NULL,
+                created_at     TEXT    NOT NULL,
+                FOREIGN KEY (experiment_id) REFERENCES strategy_experiments(id)
+            );
+
+            CREATE TABLE IF NOT EXISTS strategy_experiment_feedback (
+                id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                experiment_id  INTEGER NOT NULL UNIQUE,
+                feedback_json  TEXT    NOT NULL,
+                prompt_version TEXT    NOT NULL,
+                schema_version TEXT    NOT NULL,
+                model          TEXT,
+                created_at     TEXT    NOT NULL,
+                updated_at     TEXT    NOT NULL,
+                FOREIGN KEY (experiment_id) REFERENCES strategy_experiments(id)
+            );
         """)
         ensure_default_strategy_version(conn)
     log.info("Database ready at %s", _DB_PATH)
@@ -340,6 +378,169 @@ def _hydrate_strategy_version(version: dict) -> dict:
     version["latest_backtest_summary"] = json.loads(summary_json) if summary_json else None
     version["latest_backtest_at"] = version.get("latest_backtest_at")
     return version
+
+
+def create_strategy_experiment(
+    strategy_code: str,
+    config: dict,
+    scenario_summary: list[str],
+    job_id: str,
+    strategy_version_id: Optional[int] = None,
+) -> dict:
+    with _get_conn() as conn:
+        created_at = _now()
+        cur = conn.execute(
+            """
+            INSERT INTO strategy_experiments
+            (strategy_version_id, strategy_code, job_id, status, config_json, scenario_summary_json, aggregate_summary_json, error, created_at, updated_at)
+            VALUES (?,?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                strategy_version_id,
+                strategy_code,
+                job_id,
+                "running",
+                json.dumps(config),
+                json.dumps(scenario_summary),
+                None,
+                None,
+                created_at,
+                created_at,
+            ),
+        )
+        row = conn.execute("SELECT * FROM strategy_experiments WHERE id = ?", (cur.lastrowid,)).fetchone()
+    return _hydrate_strategy_experiment(dict(row))
+
+
+def add_strategy_experiment_run(
+    experiment_id: int,
+    run_key: str,
+    params: dict,
+    scenario_tag: str,
+    result: dict,
+) -> dict:
+    with _get_conn() as conn:
+        created_at = _now()
+        cur = conn.execute(
+            """
+            INSERT INTO strategy_experiment_runs
+            (experiment_id, run_key, params_json, scenario_tag, result_json, created_at)
+            VALUES (?,?,?,?,?,?)
+            """,
+            (experiment_id, run_key, json.dumps(params), scenario_tag, json.dumps(result), created_at),
+        )
+        row = conn.execute("SELECT * FROM strategy_experiment_runs WHERE id = ?", (cur.lastrowid,)).fetchone()
+    return _hydrate_strategy_experiment_run(dict(row))
+
+
+def update_strategy_experiment_status(
+    experiment_id: int,
+    status: str,
+    aggregate_summary: Optional[dict] = None,
+    error: Optional[str] = None,
+) -> dict:
+    with _get_conn() as conn:
+        conn.execute(
+            """
+            UPDATE strategy_experiments
+            SET status = ?, aggregate_summary_json = ?, error = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (
+                status,
+                json.dumps(aggregate_summary) if aggregate_summary is not None else None,
+                error,
+                _now(),
+                experiment_id,
+            ),
+        )
+        row = conn.execute("SELECT * FROM strategy_experiments WHERE id = ?", (experiment_id,)).fetchone()
+    return _hydrate_strategy_experiment(dict(row))
+
+
+def get_strategy_experiment(experiment_id: int) -> Optional[dict]:
+    with _get_conn() as conn:
+        row = conn.execute("SELECT * FROM strategy_experiments WHERE id = ?", (experiment_id,)).fetchone()
+    return _hydrate_strategy_experiment(dict(row)) if row else None
+
+
+def list_strategy_experiment_runs(experiment_id: int) -> list[dict]:
+    with _get_conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT * FROM strategy_experiment_runs
+            WHERE experiment_id = ?
+            ORDER BY id ASC
+            """,
+            (experiment_id,),
+        ).fetchall()
+    return [_hydrate_strategy_experiment_run(dict(row)) for row in rows]
+
+
+def save_strategy_experiment_feedback(
+    experiment_id: int,
+    feedback: dict,
+    prompt_version: str,
+    schema_version: str,
+    model: Optional[str],
+) -> dict:
+    with _get_conn() as conn:
+        created_at = _now()
+        conn.execute(
+            """
+            INSERT INTO strategy_experiment_feedback
+            (experiment_id, feedback_json, prompt_version, schema_version, model, created_at, updated_at)
+            VALUES (?,?,?,?,?,?,?)
+            ON CONFLICT(experiment_id) DO UPDATE SET
+                feedback_json = excluded.feedback_json,
+                prompt_version = excluded.prompt_version,
+                schema_version = excluded.schema_version,
+                model = excluded.model,
+                updated_at = excluded.updated_at
+            """,
+            (
+                experiment_id,
+                json.dumps(feedback),
+                prompt_version,
+                schema_version,
+                model,
+                created_at,
+                created_at,
+            ),
+        )
+        row = conn.execute(
+            "SELECT * FROM strategy_experiment_feedback WHERE experiment_id = ?",
+            (experiment_id,),
+        ).fetchone()
+    return _hydrate_strategy_experiment_feedback(dict(row))
+
+
+def get_strategy_experiment_feedback(experiment_id: int) -> Optional[dict]:
+    with _get_conn() as conn:
+        row = conn.execute(
+            "SELECT * FROM strategy_experiment_feedback WHERE experiment_id = ?",
+            (experiment_id,),
+        ).fetchone()
+    return _hydrate_strategy_experiment_feedback(dict(row)) if row else None
+
+
+def _hydrate_strategy_experiment(row: dict) -> dict:
+    row["config"] = json.loads(row.pop("config_json"))
+    row["scenario_summary"] = json.loads(row.pop("scenario_summary_json"))
+    aggregate_summary_json = row.pop("aggregate_summary_json", None)
+    row["aggregate_summary"] = json.loads(aggregate_summary_json) if aggregate_summary_json else None
+    return row
+
+
+def _hydrate_strategy_experiment_run(row: dict) -> dict:
+    row["params"] = json.loads(row.pop("params_json"))
+    row["result"] = json.loads(row.pop("result_json"))
+    return row
+
+
+def _hydrate_strategy_experiment_feedback(row: dict) -> dict:
+    row["feedback"] = json.loads(row.pop("feedback_json"))
+    return row
 
 
 # ─────────────────────────────────────────────────────────────

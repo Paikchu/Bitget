@@ -1,4 +1,5 @@
 export const DEFAULT_BACKTEST_FORM = {
+  timeframe: '15m',
   days: 90,
   equity: 10000,
   leverage: 5,
@@ -14,6 +15,7 @@ const FIELD_TYPES = {
 
 export function formatBacktestForm(values) {
   return {
+    timeframe: values.timeframe || DEFAULT_BACKTEST_FORM.timeframe,
     days: String(values.days),
     equity: String(values.equity),
     leverage: String(values.leverage),
@@ -48,6 +50,7 @@ export function sanitizeBacktestInput(key, value) {
 
 export function parseBacktestForm(form) {
   return {
+    timeframe: parseTimeframe(form.timeframe),
     days: parseFieldValue('days', form.days),
     equity: parseFieldValue('equity', form.equity),
     leverage: parseFieldValue('leverage', form.leverage),
@@ -68,4 +71,8 @@ function parseFieldValue(key, rawValue) {
 function normalizeInteger(value) {
   if (!value) return ''
   return value.replace(/^0+(?=\d)/, '')
+}
+
+function parseTimeframe(value) {
+  return value || DEFAULT_BACKTEST_FORM.timeframe
 }
