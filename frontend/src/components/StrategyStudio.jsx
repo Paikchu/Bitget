@@ -204,11 +204,11 @@ export default function StrategyStudio() {
 
   return (
     <div className="relative flex h-full min-h-0 w-full min-w-0 flex-col overflow-hidden px-4 pb-6 pt-0 box-border">
-      <div className="sticky top-0 z-10 -mx-4 mb-2 border-b border-gray-800 bg-gray-950 px-4 pb-2 pt-0">
-        <div className="flex min-w-0 items-center justify-between gap-3 rounded-lg border border-gray-800 bg-gray-900 px-2 py-1.5">
+      <div className="sticky top-0 z-10 mb-2 border-b border-gray-800 bg-gray-950 pb-2 pt-0">
+        <div className="relative rounded-lg border border-gray-800 bg-gray-900 px-2 py-1.5 pr-[158px]">
           <h1 className="min-w-0 truncate px-2 text-sm font-semibold text-gray-400">策略工作区</h1>
           <div
-            className="flex shrink-0 gap-0.5 rounded bg-gray-800 p-0.5"
+            className="absolute right-2 top-1/2 flex -translate-y-1/2 shrink-0 gap-0.5 rounded bg-gray-800 p-0.5"
             role="tablist"
             aria-label="策略页面切换"
           >

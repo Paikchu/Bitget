@@ -140,6 +140,10 @@ export default function ResizableSplitPane({
       : direction === 'row'
         ? { minWidth: minPrimary, flex: '1 1 50%' }
         : { minHeight: minPrimary, flex: '1 1 45%' }
+  const secondaryStyle =
+    direction === 'row'
+      ? { minWidth: minSecondary }
+      : { minHeight: minSecondary }
 
   const cursor = direction === 'row' ? 'cursor-col-resize' : 'cursor-row-resize'
   const dividerClass =
@@ -170,7 +174,10 @@ export default function ResizableSplitPane({
           }
         />
       </div>
-      <div className="flex-1 min-h-0 min-w-0 overflow-y-auto overflow-x-hidden overscroll-y-contain flex flex-col">
+      <div
+        className="flex-1 min-h-0 min-w-0 overflow-y-auto overflow-x-hidden overscroll-y-contain flex flex-col"
+        style={secondaryStyle}
+      >
         {secondaryChild}
       </div>
     </div>

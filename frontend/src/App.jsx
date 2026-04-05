@@ -99,11 +99,11 @@ function App() {
         </div>
       </aside>
 
-      <div className="flex-1 min-h-0 flex flex-col px-4 pb-4 pt-5">
+      <div className="flex-1 min-h-0 min-w-0 flex flex-col px-4 pb-4 pt-5">
         <ResizableSplitPane
           direction={isLg ? 'row' : 'col'}
           minPrimary={isLg ? 300 : 200}
-          minSecondary={isLg ? 420 : 240}
+          minSecondary={isLg ? 560 : 240}
           storageKey="bitget-dashboard-studio"
           primary={dashboard}
           secondary={studio}
