@@ -28,6 +28,10 @@ const useBotStore = create((set) => ({
   backtestTrades: null,   // null = no backtest run yet
   backtestSummary: null,
   setBacktestResult: (trades, summary) => set({ backtestTrades: trades, backtestSummary: summary }),
+  backtestFeedback: null,
+  backtestFeedbackStatus: null,
+  setBacktestFeedback: (backtestFeedback) => set({ backtestFeedback }),
+  setBacktestFeedbackStatus: (backtestFeedbackStatus) => set({ backtestFeedbackStatus }),
 
   strategyCode: '',
   setStrategyCode: (strategyCode) => set({ strategyCode }),

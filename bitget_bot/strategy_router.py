@@ -15,14 +15,20 @@ import os
 import re
 import threading
 import uuid
+from itertools import product
+from statistics import median
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Any, Optional
 
 import ccxt
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from bitget_bot import db as _db
+from bitget_bot.ai_feedback import (
+    analyze_backtest as _analyze_backtest_feedback,
+    analyze_experiment as _analyze_experiment_feedback,
+)
 
 log = logging.getLogger("bitget_bot.strategy_router")
 
@@ -135,6 +141,22 @@ class BacktestRequest(BaseModel):
     margin_pct: float = 100.0
     fee_rate: float = 0.0005
     squeeze_threshold: float = 0.35
+    stop_loss_pct: Optional[float] = None
+    take_profit_pct: Optional[float] = None
+    risk_reward_ratio: Optional[float] = None
+    trailing_stop_enabled: bool = False
+
+
+class ExperimentRequest(BaseModel):
+    strategy_code: str
+    strategy_version_id: Optional[int] = None
+    symbol: str = "BTC/USDT:USDT"
+    initial_equity: float = 10_000.0
+    leverage: int = 5
+    margin_pct: float = 100.0
+    fee_rate: float = 0.0005
+    squeeze_threshold: float = 0.35
+    parameter_grid: dict[str, list[Any] | Any]
 
 
 # ─────────────────────────────────────────────────────────────
@@ -246,6 +268,10 @@ def start_backtest(req: BacktestRequest):
                 "margin_pct": req.margin_pct,
                 "fee_rate": req.fee_rate,
                 "squeeze_threshold": req.squeeze_threshold,
+                "stop_loss_pct": req.stop_loss_pct,
+                "take_profit_pct": req.take_profit_pct,
+                "risk_reward_ratio": req.risk_reward_ratio,
+                "trailing_stop_enabled": req.trailing_stop_enabled,
             }
             result = run_strategy_in_sandbox(req.strategy_code, ohlcv, params)
             if req.strategy_version_id and result.get("summary"):
@@ -277,6 +303,179 @@ def get_backtest(job_id: str):
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
     return job
+
+
+@router.post("/backtest/{job_id}/feedback")
+def generate_backtest_feedback(job_id: str):
+    job = _jobs.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if job.get("status") != "done":
+        raise HTTPException(status_code=400, detail="Backtest is not completed")
+    if not job.get("trades"):
+        raise HTTPException(status_code=400, detail="Backtest has no trades")
+
+    analyzed = _analyze_backtest_feedback(job)
+    job["feedback"] = {
+        "job_id": job_id,
+        "feedback": analyzed["feedback"],
+        "prompt_version": analyzed["prompt_version"],
+        "schema_version": analyzed["schema_version"],
+        "model": analyzed["model"],
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    return job["feedback"]
+
+
+@router.get("/backtest/{job_id}/feedback")
+def get_backtest_feedback(job_id: str):
+    job = _jobs.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    feedback = job.get("feedback")
+    if not feedback:
+        raise HTTPException(status_code=404, detail="Backtest feedback not found")
+    return feedback
+
+
+def _normalize_grid(parameter_grid: dict[str, list[Any] | Any]) -> dict[str, list[Any]]:
+    normalized: dict[str, list[Any]] = {}
+    for key, value in parameter_grid.items():
+        normalized[key] = value if isinstance(value, list) else [value]
+    return normalized
+
+
+def _build_experiment_cases(req: ExperimentRequest) -> list[dict]:
+    grid = _normalize_grid(req.parameter_grid)
+    keys = list(grid.keys())
+    cases = []
+    for combo in product(*(grid[key] for key in keys)):
+        params = dict(zip(keys, combo))
+        timeframe = params.get("timeframe", "15m")
+        days = int(params.get("days", 90))
+        scenario_tag = f"{timeframe}-{days}d"
+        cases.append({"params": params, "scenario_tag": scenario_tag})
+    return cases
+
+
+def _aggregate_experiment_runs(runs: list[dict]) -> dict:
+    summaries = [run["result"].get("summary", {}) for run in runs]
+    returns = [summary.get("total_return_pct", 0.0) for summary in summaries]
+    drawdowns = [summary.get("max_drawdown_pct", 0.0) for summary in summaries]
+    positive_runs = sum(1 for value in returns if value > 0)
+    return {
+        "run_count": len(runs),
+        "best_total_return_pct": round(max(returns), 4) if returns else 0.0,
+        "median_total_return_pct": round(median(returns), 4) if returns else 0.0,
+        "worst_max_drawdown_pct": round(max(drawdowns), 4) if drawdowns else 0.0,
+        "positive_run_count": positive_runs,
+        "stability_score": round((positive_runs / len(runs) * 100), 2) if runs else 0.0,
+    }
+
+
+@router.post("/experiments")
+def start_experiment(req: ExperimentRequest):
+    job_id = f"exp_{uuid.uuid4().hex[:12]}"
+    cases = _build_experiment_cases(req)
+    scenario_summary = [case["scenario_tag"] for case in cases]
+    experiment = _db.create_strategy_experiment(
+        strategy_version_id=req.strategy_version_id,
+        strategy_code=req.strategy_code,
+        config=req.model_dump(),
+        scenario_summary=scenario_summary,
+        job_id=job_id,
+    )
+    _jobs[job_id] = {"status": "running", "job_id": job_id, "experiment_id": experiment["id"]}
+
+    def _run():
+        try:
+            from bitget_bot.sandbox.docker_executor import run_strategy_in_sandbox
+
+            saved_runs = []
+            for index, case in enumerate(cases, start=1):
+                case_params = {
+                    "symbol": req.symbol,
+                    "timeframe": case["params"].get("timeframe", "15m"),
+                    "initial_equity": req.initial_equity,
+                    "leverage": req.leverage,
+                    "margin_pct": req.margin_pct,
+                    "fee_rate": req.fee_rate,
+                    "squeeze_threshold": req.squeeze_threshold,
+                    "days": int(case["params"].get("days", 90)),
+                    "stop_loss_pct": case["params"].get("stop_loss_pct"),
+                    "take_profit_pct": case["params"].get("take_profit_pct"),
+                    "risk_reward_ratio": case["params"].get("risk_reward_ratio"),
+                    "trailing_stop_enabled": bool(case["params"].get("trailing_stop_enabled", False)),
+                }
+                ohlcv = _fetch_ohlcv(req.symbol, case_params["timeframe"], case_params["days"])
+                result = run_strategy_in_sandbox(req.strategy_code, ohlcv, case_params)
+                saved_runs.append(
+                    _db.add_strategy_experiment_run(
+                        experiment_id=experiment["id"],
+                        run_key=f"run-{index}",
+                        params=case["params"],
+                        scenario_tag=case["scenario_tag"],
+                        result=result,
+                    )
+                )
+            aggregate_summary = _aggregate_experiment_runs(saved_runs)
+            _db.update_strategy_experiment_status(experiment["id"], "done", aggregate_summary=aggregate_summary)
+            _jobs[job_id] = {
+                "status": "done",
+                "job_id": job_id,
+                "experiment_id": experiment["id"],
+                "aggregate_summary": aggregate_summary,
+            }
+        except Exception as exc:
+            log.exception("Strategy experiment job %s failed", job_id)
+            _db.update_strategy_experiment_status(experiment["id"], "error", error=str(exc))
+            _jobs[job_id] = {"status": "error", "job_id": job_id, "experiment_id": experiment["id"], "error": str(exc)}
+
+    threading.Thread(target=_run, daemon=True, name=f"exp-{job_id}").start()
+    return {"job_id": job_id, "status": "running", "experiment_id": experiment["id"]}
+
+
+@router.get("/experiments/{experiment_id}")
+def get_experiment(experiment_id: int):
+    experiment = _db.get_strategy_experiment(experiment_id)
+    if not experiment:
+        raise HTTPException(status_code=404, detail="Experiment not found")
+    return experiment
+
+
+@router.get("/experiments/{experiment_id}/runs")
+def get_experiment_runs(experiment_id: int):
+    experiment = _db.get_strategy_experiment(experiment_id)
+    if not experiment:
+        raise HTTPException(status_code=404, detail="Experiment not found")
+    return _db.list_strategy_experiment_runs(experiment_id)
+
+
+@router.post("/experiments/{experiment_id}/feedback")
+def generate_experiment_feedback(experiment_id: int):
+    experiment = _db.get_strategy_experiment(experiment_id)
+    if not experiment:
+        raise HTTPException(status_code=404, detail="Experiment not found")
+    runs = _db.list_strategy_experiment_runs(experiment_id)
+    if not runs:
+        raise HTTPException(status_code=400, detail="Experiment has no runs")
+    analyzed = _analyze_experiment_feedback(experiment, runs)
+    stored = _db.save_strategy_experiment_feedback(
+        experiment_id=experiment_id,
+        feedback=analyzed["feedback"],
+        prompt_version=analyzed["prompt_version"],
+        schema_version=analyzed["schema_version"],
+        model=analyzed["model"],
+    )
+    return stored
+
+
+@router.get("/experiments/{experiment_id}/feedback")
+def get_experiment_feedback(experiment_id: int):
+    feedback = _db.get_strategy_experiment_feedback(experiment_id)
+    if not feedback:
+        raise HTTPException(status_code=404, detail="Experiment feedback not found")
+    return feedback
 
 
 # ─────────────────────────────────────────────────────────────

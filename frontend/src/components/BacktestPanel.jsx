@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts'
 import dayjs from 'dayjs'
 import useBotStore from '../store/botStore'
@@ -10,6 +10,13 @@ import {
 } from './backtestForm'
 
 const BACKTEST_DEFAULTS_KEY = 'bitget-backtest-defaults'
+const TIMEFRAME_OPTIONS = ['1m', '5m', '15m', '30m', '1h', '4h', '1d']
+
+function formatRunParam(value) {
+  if (typeof value === 'boolean') return value ? '开' : '关'
+  if (value === null || value === undefined || value === '') return '—'
+  return String(value)
+}
 
 function loadBacktestDefaults() {
   if (typeof window === 'undefined') return formatBacktestForm(DEFAULT_BACKTEST_FORM)
@@ -19,6 +26,9 @@ function loadBacktestDefaults() {
     if (!raw) return formatBacktestForm(DEFAULT_BACKTEST_FORM)
     const parsed = JSON.parse(raw)
     return formatBacktestForm({
+      timeframe: TIMEFRAME_OPTIONS.includes(parsed.timeframe)
+        ? parsed.timeframe
+        : DEFAULT_BACKTEST_FORM.timeframe,
       days: Number(parsed.days) || DEFAULT_BACKTEST_FORM.days,
       equity: Number(parsed.equity) || DEFAULT_BACKTEST_FORM.equity,
       leverage: Number(parsed.leverage) || DEFAULT_BACKTEST_FORM.leverage,
@@ -29,13 +39,15 @@ function loadBacktestDefaults() {
   }
 }
 
-export default function BacktestPanel() {
+export default function BacktestPanel({ timeframe, onTimeframeChange }) {
   const [form, setForm] = useState(loadBacktestDefaults)
   const [status, setStatus] = useState(null)
   const [result, setResult] = useState(null)
   const [error, setError] = useState(null)
   const [savedNotice, setSavedNotice] = useState(null)
   const setBacktestResult = useBotStore((s) => s.setBacktestResult)
+  const setBacktestFeedback = useBotStore((s) => s.setBacktestFeedback)
+  const setBacktestFeedbackStatus = useBotStore((s) => s.setBacktestFeedbackStatus)
   const strategyCode = useBotStore((s) => s.strategyCode)
   const currentStrategyVersion = useBotStore((s) => s.currentStrategyVersion)
   const bumpVersionHistoryNonce = useBotStore((s) => s.bumpVersionHistoryNonce)
@@ -49,6 +61,16 @@ export default function BacktestPanel() {
     ],
     [],
   )
+
+  useEffect(() => {
+    if (!timeframe || form.timeframe === timeframe) return
+    setForm((current) => ({ ...current, timeframe }))
+  }, [form.timeframe, timeframe])
+
+  useEffect(() => {
+    if (!form.timeframe || form.timeframe === timeframe) return
+    onTimeframeChange?.(form.timeframe)
+  }, [form.timeframe, onTimeframeChange, timeframe])
 
   function handleSaveDefaults() {
     if (typeof window === 'undefined') return
@@ -65,6 +87,8 @@ export default function BacktestPanel() {
     setResult(null)
     setError(null)
     setSavedNotice(null)
+    setBacktestFeedback(null)
+    setBacktestFeedbackStatus(null)
     const parsedForm = parseBacktestForm(form)
     if (!strategyCode?.trim()) {
       setError('暂无可回测的策略代码，请先在右侧生成或加载策略代码')
@@ -76,7 +100,7 @@ export default function BacktestPanel() {
         strategy_code: strategyCode,
         strategy_version_id: currentStrategyVersion?.id ?? null,
         symbol: 'BTC/USDT:USDT',
-        timeframe: '15m',
+        timeframe: parsedForm.timeframe,
         days: parsedForm.days,
         initial_equity: parsedForm.equity,
         leverage: parsedForm.leverage,
@@ -107,7 +131,7 @@ export default function BacktestPanel() {
       setResult(data)
       setStatus('done')
       // Push trades + summary (with leverage) into global store so TradesTable can display them
-      setBacktestResult(data.trades || [], { ...data.summary, _leverage: leverage })
+      setBacktestResult(data.trades || [], { ...data.summary, _leverage: leverage, _job_id: data.job_id })
       if (currentStrategyVersion?.id) {
         bumpVersionHistoryNonce()
       }
@@ -179,6 +203,24 @@ export default function BacktestPanel() {
       </div>
 
       <div className="flex flex-wrap gap-3 items-end mb-3">
+        <div className="flex flex-col gap-1">
+          <label className="text-xs text-gray-500">时间周期</label>
+          <select
+            value={form.timeframe}
+            onChange={(e) => {
+              const nextTimeframe = e.target.value
+              setForm((current) => ({ ...current, timeframe: nextTimeframe }))
+              onTimeframeChange?.(nextTimeframe)
+            }}
+            className="w-24 bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-sm text-white focus:outline-none focus:border-blue-500"
+          >
+            {TIMEFRAME_OPTIONS.map((option) => (
+              <option key={option} value={option}>
+                {option}
+              </option>
+            ))}
+          </select>
+        </div>
         {controls.map(({ key, label, ...rest }) => (
           <div key={key} className="flex flex-col gap-1">
             <label className="text-xs text-gray-500">{label}</label>
@@ -264,6 +306,7 @@ export default function BacktestPanel() {
           )}
         </div>
       )}
+
     </div>
   )
 }

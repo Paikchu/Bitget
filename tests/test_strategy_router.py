@@ -1,5 +1,6 @@
 from bitget_bot import strategy_router
 from fastapi import HTTPException
+import numpy as np
 
 
 def test_normalize_generated_code_uses_previous_window_levels():
@@ -273,6 +274,266 @@ def test_start_backtest_skips_version_record_without_strategy_version_id(monkeyp
 
     assert job["status"] == "done"
     assert called["value"] is False
+
+
+def test_start_backtest_passes_requested_timeframe_into_data_fetch_and_params(monkeypatch):
+    captured = {}
+
+    def _fake_fetch_ohlcv(symbol, timeframe, days):
+        captured["fetch"] = {
+            "symbol": symbol,
+            "timeframe": timeframe,
+            "days": days,
+        }
+        return [[1, 1, 1, 1, 1, 1]]
+
+    def _fake_run_strategy_in_sandbox(strategy_code, ohlcv, params):
+        captured["params"] = params
+        return {
+            "success": True,
+            "summary": {"total_return_pct": 1.2, "total_trades": 2},
+            "equity_curve": [],
+            "trades": [],
+        }
+
+    monkeypatch.setattr(strategy_router, "_fetch_ohlcv", _fake_fetch_ohlcv)
+    monkeypatch.setitem(__import__("sys").modules, "bitget_bot.sandbox.docker_executor", type("M", (), {
+        "run_strategy_in_sandbox": staticmethod(_fake_run_strategy_in_sandbox),
+        "SandboxError": Exception,
+    })())
+
+    class _ImmediateThread:
+        def __init__(self, target, **kwargs):
+            self._target = target
+
+        def start(self):
+            self._target()
+
+    monkeypatch.setattr(strategy_router.threading, "Thread", _ImmediateThread)
+
+    response = strategy_router.start_backtest(
+        strategy_router.BacktestRequest(
+            strategy_code="print('x')",
+            symbol="BTC/USDT:USDT",
+            timeframe="4h",
+            days=30,
+        )
+    )
+    job = strategy_router.get_backtest(response["job_id"])
+
+    assert job["status"] == "done"
+    assert captured["fetch"] == {
+        "symbol": "BTC/USDT:USDT",
+        "timeframe": "4h",
+        "days": 30,
+    }
+    assert captured["params"]["timeframe"] == "4h"
+
+
+def test_start_experiment_runs_parameter_grid_and_persists_runs(monkeypatch):
+    persisted = {"experiment": None, "runs": []}
+
+    monkeypatch.setattr(strategy_router, "_fetch_ohlcv", lambda symbol, timeframe, days: [[1, 100, 101, 99, 100, 1]])
+
+    def _fake_run_strategy_in_sandbox(strategy_code, ohlcv, params):
+        return {
+            "success": True,
+            "summary": {
+                "total_return_pct": float(params["days"]),
+                "max_drawdown_pct": 2.0,
+                "total_trades": 1,
+            },
+            "equity_curve": [],
+            "trades": [],
+        }
+
+    monkeypatch.setitem(__import__("sys").modules, "bitget_bot.sandbox.docker_executor", type("M", (), {
+        "run_strategy_in_sandbox": staticmethod(_fake_run_strategy_in_sandbox),
+        "SandboxError": Exception,
+    })())
+    monkeypatch.setattr(
+        strategy_router._db,
+        "create_strategy_experiment",
+        lambda **kwargs: persisted.update({"experiment": kwargs}) or {"id": 9, **kwargs, "status": "running"},
+    )
+    monkeypatch.setattr(
+        strategy_router._db,
+        "add_strategy_experiment_run",
+        lambda **kwargs: persisted["runs"].append(kwargs) or kwargs,
+    )
+    monkeypatch.setattr(
+        strategy_router._db,
+        "update_strategy_experiment_status",
+        lambda experiment_id, status, aggregate_summary=None, error=None: {"id": experiment_id, "status": status},
+    )
+
+    class _ImmediateThread:
+        def __init__(self, target, **kwargs):
+            self._target = target
+
+        def start(self):
+            self._target()
+
+    monkeypatch.setattr(strategy_router.threading, "Thread", _ImmediateThread)
+
+    response = strategy_router.start_experiment(
+        strategy_router.ExperimentRequest(
+            strategy_code="print('x')",
+            parameter_grid={"timeframe": ["15m", "4h"], "days": [30]},
+        )
+    )
+
+    assert response["status"] == "running"
+    assert persisted["experiment"]["scenario_summary"] == ["15m-30d", "4h-30d"]
+    assert len(persisted["runs"]) == 2
+    assert {run["scenario_tag"] for run in persisted["runs"]} == {"15m-30d", "4h-30d"}
+
+
+def test_generate_experiment_feedback_persists_analysis(monkeypatch):
+    saved = {}
+    monkeypatch.setattr(
+        strategy_router._db,
+        "get_strategy_experiment",
+        lambda experiment_id: {
+            "id": experiment_id,
+            "strategy_code": "print('x')",
+            "config": {"parameter_grid": {"timeframe": ["15m"]}},
+            "aggregate_summary": {"best_total_return_pct": 3.2},
+            "status": "done",
+        },
+    )
+    monkeypatch.setattr(
+        strategy_router._db,
+        "list_strategy_experiment_runs",
+        lambda experiment_id: [
+            {
+                "params": {"timeframe": "15m", "days": 90},
+                "scenario_tag": "15m-90d",
+                "result": {"summary": {"total_return_pct": 3.2, "max_drawdown_pct": 1.1}, "trades": []},
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        strategy_router,
+        "_analyze_experiment_feedback",
+        lambda experiment, runs: {
+            "feedback": {
+                "overall_score": 81,
+                "stop_loss_assessment": {"label": "neutral", "score": 70, "summary": "ok"},
+                "take_profit_assessment": {"label": "early", "score": 58, "summary": "too early"},
+                "robustness_assessment": {"label": "moderate", "score": 67, "summary": "mixed"},
+                "top_issues": [],
+                "recommended_experiments": [],
+                "parameter_adjustment_hints": [],
+                "confidence": 0.74,
+                "evidence": [],
+            },
+            "model": "deepseek-chat",
+            "prompt_version": "v1",
+            "schema_version": "feedback.v1",
+        },
+    )
+    monkeypatch.setattr(
+        strategy_router._db,
+        "save_strategy_experiment_feedback",
+        lambda **kwargs: saved.update(kwargs) or {"id": 3, **kwargs},
+    )
+
+    result = strategy_router.generate_experiment_feedback(7)
+
+    assert result["feedback"]["overall_score"] == 81
+    assert saved["experiment_id"] == 7
+    assert saved["schema_version"] == "feedback.v1"
+
+
+def test_generate_backtest_feedback_stores_feedback_on_job(monkeypatch):
+    strategy_router._jobs["sb_test_feedback"] = {
+        "job_id": "sb_test_feedback",
+        "status": "done",
+        "summary": {"total_trades": 3},
+        "trades": [{"direction": "long", "pnl_usdt": -10}],
+    }
+    monkeypatch.setattr(
+        strategy_router,
+        "_analyze_backtest_feedback",
+        lambda job: {
+            "feedback": {
+                "overall_score": 71,
+                "overall_diagnosis": {"headline": "Weak entries", "summary": "Repeated quick losses."},
+                "issue_groups": [],
+                "priority_actions": ["Tighten entry filter"],
+                "evidence": ["2 fast losses"],
+                "confidence": 0.8,
+            },
+            "model": "deepseek-chat",
+            "prompt_version": "v1",
+            "schema_version": "trade-feedback.v1",
+        },
+    )
+
+    result = strategy_router.generate_backtest_feedback("sb_test_feedback")
+
+    assert result["job_id"] == "sb_test_feedback"
+    assert result["schema_version"] == "trade-feedback.v1"
+    assert strategy_router._jobs["sb_test_feedback"]["feedback"]["feedback"]["overall_score"] == 71
+
+
+def test_generate_backtest_feedback_requires_completed_job():
+    strategy_router._jobs["sb_test_running"] = {"job_id": "sb_test_running", "status": "running"}
+
+    try:
+        strategy_router.generate_backtest_feedback("sb_test_running")
+    except HTTPException as exc:
+        assert exc.status_code == 400
+        assert exc.detail == "Backtest is not completed"
+    else:
+        raise AssertionError("Expected HTTPException")
+
+
+def test_generate_backtest_feedback_requires_trades():
+    strategy_router._jobs["sb_test_empty"] = {
+        "job_id": "sb_test_empty",
+        "status": "done",
+        "summary": {"total_trades": 0},
+        "trades": [],
+    }
+
+    try:
+        strategy_router.generate_backtest_feedback("sb_test_empty")
+    except HTTPException as exc:
+        assert exc.status_code == 400
+        assert exc.detail == "Backtest has no trades"
+    else:
+        raise AssertionError("Expected HTTPException")
+
+
+def test_db_log_signal_normalizes_numpy_bool_payload(monkeypatch):
+    captured = {}
+
+    monkeypatch.setattr(strategy_router, "_db", strategy_router._db)
+    from bitget_bot import runner
+
+    monkeypatch.setattr(
+        runner._db,
+        "log_event",
+        lambda event_type, message, payload=None: captured.update(
+            {"event_type": event_type, "message": message, "payload": payload}
+        ),
+    )
+
+    class _Sig:
+        long_entry = np.bool_(True)
+        short_entry = np.bool_(False)
+        close_long = np.bool_(False)
+        close_short = np.bool_(True)
+        is_squeezed = np.bool_(False)
+
+    runner._db_log_signal(_Sig(), 1711929600000, "BTC/USDT:USDT")
+
+    assert captured["event_type"] == "signal"
+    assert captured["payload"]["long_entry"] is True
+    assert captured["payload"]["close_short"] is True
+    assert captured["payload"]["is_squeezed"] is False
 
 
 def test_get_version_raises_404_when_missing(monkeypatch):
