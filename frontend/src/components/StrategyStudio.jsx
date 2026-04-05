@@ -192,7 +192,7 @@ export default function StrategyStudio() {
       role="tab"
       aria-selected={workbenchView === id}
       id={`studio-tab-${id}`}
-      className={`px-3 py-1 rounded text-xs font-medium transition-colors ${
+      className={`shrink-0 px-3 py-1 rounded text-xs font-medium transition-colors ${
       workbenchView === id
         ? 'bg-gray-600 text-white'
         : 'text-gray-400 hover:text-white'
@@ -205,10 +205,10 @@ export default function StrategyStudio() {
   return (
     <div className="relative flex h-full min-h-0 w-full min-w-0 flex-col overflow-hidden px-4 pb-6 pt-0 box-border">
       <div className="sticky top-0 z-10 -mx-4 mb-2 border-b border-gray-800 bg-gray-950 px-4 pb-2 pt-0">
-        <div className="flex items-center justify-between rounded-lg border border-gray-800 bg-gray-900 px-2 py-1.5">
-          <h1 className="text-sm font-semibold text-gray-400 px-2">策略工作区</h1>
+        <div className="flex min-w-0 items-center justify-between gap-3 rounded-lg border border-gray-800 bg-gray-900 px-2 py-1.5">
+          <h1 className="min-w-0 truncate px-2 text-sm font-semibold text-gray-400">策略工作区</h1>
           <div
-            className="flex bg-gray-800 rounded p-0.5 gap-0.5"
+            className="flex shrink-0 gap-0.5 rounded bg-gray-800 p-0.5"
             role="tablist"
             aria-label="策略页面切换"
           >

@@ -103,7 +103,7 @@ function App() {
         <ResizableSplitPane
           direction={isLg ? 'row' : 'col'}
           minPrimary={isLg ? 300 : 200}
-          minSecondary={isLg ? 320 : 240}
+          minSecondary={isLg ? 420 : 240}
           storageKey="bitget-dashboard-studio"
           primary={dashboard}
           secondary={studio}
